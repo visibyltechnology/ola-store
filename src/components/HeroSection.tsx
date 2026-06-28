@@ -97,7 +97,7 @@ const HeroSection = () => {
 
           {/* Animated Title - Line 1 */}
           <h1 className="text-4xl md:text-5xl lg:text-7xl font-display font-bold leading-tight mb-2">
-            <span className="text-primary-foreground inline-block overflow-hidden">
+            <span className="text-white inline-block overflow-hidden">
               {title1.split("").map((char, i) => (
                 <motion.span
                   key={`t1-${i}`}
@@ -143,7 +143,7 @@ const HeroSection = () => {
             initial={{ opacity: 0, y: 30, filter: "blur(8px)" }}
             animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
             transition={{ duration: 0.8, delay: 1 }}
-            className="text-lg md:text-xl text-primary-foreground/70 mb-8 max-w-lg"
+            className="text-lg md:text-xl text-white/70 mb-8 max-w-lg"
           >
             Discover premium electronics from Hisense, Samsung, LG and more.
             Buy outright or use our flexible Save to Buy installment plan.
@@ -184,7 +184,7 @@ const HeroSection = () => {
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: 1.5 + index * 0.15, duration: 0.5 }}
-                className="flex items-center gap-2 text-primary-foreground/60"
+                className="flex items-center gap-2 text-white/60"
               >
                 <motion.div
                   animate={{ rotate: [0, 10, -10, 0] }}
@@ -209,7 +209,7 @@ const HeroSection = () => {
         <motion.div
           animate={{ y: [0, 10, 0] }}
           transition={{ duration: 1.5, repeat: Infinity }}
-          className="w-6 h-10 rounded-full border-2 border-primary-foreground/30 flex items-start justify-center pt-2"
+          className="w-6 h-10 rounded-full border-2 border-white/30 flex items-start justify-center pt-2"
         >
           <motion.div className="w-1.5 h-1.5 rounded-full bg-gold" />
         </motion.div>

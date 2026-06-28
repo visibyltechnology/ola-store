@@ -1,10 +1,12 @@
-import { useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { Menu, X, ShoppingBag, User, LayoutDashboard, Sun, Moon } from "lucide-react";
+import { Menu, X, ShoppingBag, User, LayoutDashboard, Sun, Moon, Bell, Search } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useAuth } from "@/contexts/AuthContext";
+import { useCart } from "@/contexts/CartContext";
 import somisteamLogo from "@/assets/somisteam-logo.jpg";
 
 const navLinks = [
@@ -18,8 +20,28 @@ const navLinks = [
 const Navbar = () => {
   const [isOpen, setIsOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
   const { user, isAdmin } = useAuth();
   const { theme, setTheme } = useTheme();
+  const { cartCount, setIsCartOpen } = useCart();
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [searchQuery, setSearchQuery] = useState("");
+
+  useEffect(() => {
+    if (!user) return;
+    import("@/services/notificationService").then(({ subscribeToUnreadCount }) => {
+      const unsubscribe = subscribeToUnreadCount(user.uid, setUnreadCount);
+      return () => unsubscribe();
+    });
+  }, [user]);
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (searchQuery.trim()) {
+      navigate(`/shop?search=${encodeURIComponent(searchQuery.trim())}`);
+      setIsOpen(false);
+    }
+  };
 
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 glass-card border-b border-border/30">
@@ -33,7 +55,7 @@ const Navbar = () => {
             />
           </Link>
 
-          <div className="hidden lg:flex items-center gap-8">
+          <div className="hidden lg:flex items-center gap-6 xl:gap-8">
             {navLinks.map((link) => (
               <Link
                 key={link.path}
@@ -56,6 +78,47 @@ const Navbar = () => {
           </div>
 
           <div className="flex items-center gap-1">
+            {/* Desktop Search */}
+            <form onSubmit={handleSearch} className="hidden lg:flex relative items-center mr-2">
+              <Search className="absolute left-3 w-4 h-4 text-muted-foreground" />
+              <Input
+                type="text"
+                placeholder="Search products..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9 w-[200px] xl:w-[250px] bg-secondary/50 border-border/50 text-foreground dark:text-white placeholder:text-muted-foreground rounded-full h-9 focus-visible:ring-accent"
+              />
+            </form>
+
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setIsCartOpen(true)}
+              className="relative text-muted-foreground hover:text-foreground mr-1"
+            >
+              <ShoppingBag className="w-5 h-5" />
+              {cartCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-accent text-accent-foreground text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
+                  {cartCount}
+                </span>
+              )}
+            </Button>
+            {user && (
+              <Link to="/notifications">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="relative text-muted-foreground hover:text-foreground"
+                >
+                  <Bell className="w-5 h-5" />
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-1 -right-1 bg-destructive text-destructive-foreground text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
+                      {unreadCount}
+                    </span>
+                  )}
+                </Button>
+              </Link>
+            )}
             <Button
               variant="ghost"
               size="icon"
@@ -107,6 +170,16 @@ const Navbar = () => {
             className="lg:hidden overflow-hidden bg-card border-t border-border"
           >
             <div className="container mx-auto px-4 py-4 flex flex-col gap-2">
+              <form onSubmit={handleSearch} className="relative mb-2">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Input
+                  type="text"
+                  placeholder="Search products..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-9 w-full bg-secondary/50 border-border/50 text-foreground dark:text-white placeholder:text-muted-foreground rounded-xl h-10 focus-visible:ring-accent"
+                />
+              </form>
               {navLinks.map((link) => (
                 <Link
                   key={link.path}

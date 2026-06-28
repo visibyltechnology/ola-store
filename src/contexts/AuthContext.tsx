@@ -1,12 +1,15 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { User, Session } from "@supabase/supabase-js";
-import { supabase } from "@/integrations/supabase/client";
+import { User, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut as firebaseSignOut, updateProfile } from "firebase/auth";
+import { doc, getDoc, setDoc, addDoc, collection } from "firebase/firestore";
+import { auth, db } from "@/integrations/firebase/client";
+import { requestNotificationPermission } from "@/integrations/firebase/messaging";
 
 interface AuthContextType {
   user: User | null;
-  session: Session | null;
   loading: boolean;
   isAdmin: boolean;
+  isDeliveryRider: boolean;
+  role: "admin" | "delivery_rider" | "customer";
   signUp: (email: string, password: string, fullName: string, phone?: string) => Promise<{ error: Error | null }>;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
@@ -21,119 +24,129 @@ const logActivity = async (
   metadata: Record<string, unknown> = {}
 ) => {
   try {
-    await supabase.from("activity_logs").insert({
+    await addDoc(collection(db, "activity_logs"), {
       user_id: userId,
       event_type: eventType,
       email,
       user_agent: navigator.userAgent.slice(0, 200),
       metadata,
+      created_at: new Date().toISOString()
     });
   } catch {
     // Silently fail — logging should never break the auth flow
   }
 };
 
-const sendLoginNotification = async (accessToken: string) => {
+const registerFcmToken = async (userId: string) => {
   try {
-    await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/login-notification`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ user_agent: navigator.userAgent }),
-    });
-  } catch {
-    // Silently fail — never block login flow
+    const token = await requestNotificationPermission();
+    if (token) {
+      await setDoc(doc(db, "user_fcm_tokens", userId), {
+        user_id: userId,
+        fcm_token: token,
+        device_type: navigator.userAgent.slice(0, 100),
+        updated_at: new Date().toISOString()
+      }, { merge: true });
+    }
+  } catch (error) {
+    console.warn("FCM Registration failed", error);
   }
 };
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isDeliveryRider, setIsDeliveryRider] = useState(false);
+  const [role, setRole] = useState<"admin" | "delivery_rider" | "customer">("customer");
 
-  const checkAdminRole = async (userId: string) => {
-    const { data } = await supabase
-      .from("user_roles")
-      .select("role")
-      .eq("user_id", userId)
-      .eq("role", "admin")
-      .maybeSingle();
-    setIsAdmin(!!data);
+  const checkUserRole = async (userId: string) => {
+    try {
+      const profileDoc = await getDoc(doc(db, "profiles", userId));
+      if (profileDoc.exists()) {
+        const data = profileDoc.data();
+        const adminStatus = data.isAdmin === true;
+        
+        setIsAdmin(adminStatus);
+        setRole(adminStatus ? "admin" : "customer");
+        setIsDeliveryRider(data.isDeliveryRider === true);
+      } else {
+        setRole("customer");
+        setIsAdmin(false);
+        setIsDeliveryRider(false);
+      }
+    } catch {
+      setRole("customer");
+      setIsAdmin(false);
+      setIsDeliveryRider(false);
+    }
   };
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
-        if (session?.user) {
-          setTimeout(() => checkAdminRole(session.user.id), 0);
-          if (event === "SIGNED_IN") {
-            setTimeout(() => logActivity("login", session.user.id, session.user.email ?? null, {
-              provider: session.user.app_metadata?.provider ?? "email",
-            }), 0);
-            setTimeout(() => sendLoginNotification(session.access_token), 0);
-          }
-        } else {
-          setIsAdmin(false);
-        }
-        setLoading(false);
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      if (currentUser) {
+        checkUserRole(currentUser.uid);
+        setTimeout(() => logActivity("login", currentUser.uid, currentUser.email ?? null, {
+          provider: currentUser.providerData[0]?.providerId ?? "email",
+        }), 0);
+        setTimeout(() => registerFcmToken(currentUser.uid), 1000); // slight delay
+      } else {
+        setIsAdmin(false);
+        setIsDeliveryRider(false);
+        setRole("customer");
       }
-    );
-
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      if (session?.user) checkAdminRole(session.user.id);
       setLoading(false);
     });
 
-    return () => subscription.unsubscribe();
+    return () => unsubscribe();
   }, []);
 
   const signUp = async (email: string, password: string, fullName: string, phone?: string) => {
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: { data: { full_name: fullName, phone: phone ?? "" } },
-    });
+    try {
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      const newUser = userCredential.user;
+      
+      await updateProfile(newUser, { displayName: fullName });
+      
+      // Store in profiles collection
+      await setDoc(doc(db, "profiles", newUser.uid), {
+        user_id: newUser.uid,
+        full_name: fullName,
+        phone: phone || "",
+        created_at: new Date().toISOString()
+      });
 
-    if (!error && data.user) {
-      await logActivity("signup", data.user.id, email, { full_name: fullName, phone: phone ?? "" });
-      if (phone) {
-        await supabase.from("profiles").update({ phone }).eq("user_id", data.user.id);
-      }
-    } else if (error) {
-      await logActivity("signup_failed", null, email, { reason: error.message });
+      await logActivity("signup", newUser.uid, email, { full_name: fullName, phone: phone ?? "" });
+      return { error: null };
+    } catch (error) {
+      await logActivity("signup_failed", null, email, { reason: (error as Error).message });
+      return { error: error as Error };
     }
-
-    return { error: error as Error | null };
   };
 
   const signIn = async (email: string, password: string) => {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-
-    if (error) {
-      await logActivity("login_failed", null, email, { reason: error.message });
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+      return { error: null };
+    } catch (error) {
+      await logActivity("login_failed", null, email, { reason: (error as Error).message });
+      return { error: error as Error };
     }
-    // Successful login is logged via onAuthStateChange SIGNED_IN event
-
-    return { error: error as Error | null };
   };
 
   const signOut = async () => {
     if (user) {
-      await logActivity("logout", user.id, user.email ?? null, {});
+      await logActivity("logout", user.uid, user.email ?? null, {});
     }
-    await supabase.auth.signOut();
+    await firebaseSignOut(auth);
     setIsAdmin(false);
+    setIsDeliveryRider(false);
+    setRole("customer");
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, loading, isAdmin, signUp, signIn, signOut }}>
+    <AuthContext.Provider value={{ user, loading, isAdmin, isDeliveryRider, role, signUp, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   );

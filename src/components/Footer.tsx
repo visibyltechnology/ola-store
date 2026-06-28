@@ -15,7 +15,7 @@ const itemVariants = {
 
 const Footer = () => {
   return (
-    <footer className="bg-navy text-primary-foreground/70 overflow-hidden">
+    <footer className="bg-navy text-white/70 overflow-hidden">
       <motion.div
         variants={containerVariants}
         initial="hidden"
@@ -35,7 +35,7 @@ const Footer = () => {
           </motion.div>
 
           <motion.div variants={itemVariants}>
-            <h4 className="font-display font-semibold text-primary-foreground mb-4">Quick Links</h4>
+            <h4 className="font-display font-semibold text-white mb-4">Quick Links</h4>
             <div className="flex flex-col gap-2">
               {[
                 { label: "Shop", path: "/shop" },
@@ -51,7 +51,7 @@ const Footer = () => {
           </motion.div>
 
           <motion.div variants={itemVariants}>
-            <h4 className="font-display font-semibold text-primary-foreground mb-4">Categories</h4>
+            <h4 className="font-display font-semibold text-white mb-4">Categories</h4>
             <div className="flex flex-col gap-2">
               {["Televisions", "Refrigerators", "Washing Machines", "Air Conditioners"].map((cat) => (
                 <Link key={cat} to={`/shop?category=${encodeURIComponent(cat)}`} className="text-sm hover:text-accent transition-colors hover:translate-x-1 inline-block transform duration-200">
@@ -62,7 +62,7 @@ const Footer = () => {
           </motion.div>
 
           <motion.div variants={itemVariants}>
-            <h4 className="font-display font-semibold text-primary-foreground mb-4">Contact Us</h4>
+            <h4 className="font-display font-semibold text-white mb-4">Contact Us</h4>
             <div className="flex flex-col gap-3">
               {[
                 { icon: Phone, text: "+234 800 olas-bs" },
@@ -83,7 +83,7 @@ const Footer = () => {
           whileInView={{ scaleX: 1 }}
           viewport={{ once: true }}
           transition={{ duration: 0.8 }}
-          className="border-t border-primary-foreground/10 mt-12 pt-8 text-center text-sm origin-center"
+          className="border-t border-white/10 mt-12 pt-8 text-center text-sm origin-center"
         >
           <p>&copy; {new Date().getFullYear()} Olas & Bs NIG Ltd. All rights reserved.</p>
         </motion.div>

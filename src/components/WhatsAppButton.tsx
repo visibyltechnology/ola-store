@@ -1,17 +1,20 @@
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { db } from "@/integrations/firebase/client";
+import { collection, query, where, getDocs } from "firebase/firestore";
 
 const WhatsAppButton = () => {
   const [phone, setPhone] = useState("");
 
   useEffect(() => {
     const fetch = async () => {
-      const { data } = await supabase
-        .from("site_settings")
-        .select("value")
-        .eq("key", "whatsapp_number")
-        .maybeSingle();
-      if (data?.value) setPhone(data.value.replace(/\D/g, ""));
+      try {
+        const q = query(collection(db, "site_settings"), where("key", "==", "whatsapp_number"));
+        const snapshot = await getDocs(q);
+        if (!snapshot.empty) {
+          const val = snapshot.docs[0].data().value;
+          if (val) setPhone(val.replace(/\D/g, ""));
+        }
+      } catch { /* ignore */ }
     };
     fetch();
   }, []);

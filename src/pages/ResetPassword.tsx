@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
+import { auth } from "@/integrations/firebase/client";
+import { confirmPasswordReset, verifyPasswordResetCode } from "firebase/auth";
 import somisteamLogo from "@/assets/somisteam-logo.jpg";
 
 const ResetPassword = () => {
@@ -12,22 +13,23 @@ const ResetPassword = () => {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [isRecovery, setIsRecovery] = useState(false);
+  const [oobCode, setOobCode] = useState<string | null>(null);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   useEffect(() => {
-    const hashParams = new URLSearchParams(window.location.hash.substring(1));
-    if (hashParams.get("type") === "recovery") {
-      setIsRecovery(true);
+    const code = searchParams.get("oobCode");
+    if (code) {
+      verifyPasswordResetCode(auth, code)
+        .then(() => {
+          setIsRecovery(true);
+          setOobCode(code);
+        })
+        .catch(() => {
+          setIsRecovery(false);
+        });
     }
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "PASSWORD_RECOVERY") {
-        setIsRecovery(true);
-      }
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
+  }, [searchParams]);
 
   const handleReset = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -39,14 +41,20 @@ const ResetPassword = () => {
       toast.error("Passwords do not match");
       return;
     }
+    if (!oobCode) {
+      toast.error("Invalid reset code");
+      return;
+    }
+    
     setLoading(true);
-    const { error } = await supabase.auth.updateUser({ password });
-    setLoading(false);
-    if (error) {
-      toast.error(error.message);
-    } else {
+    try {
+      await confirmPasswordReset(auth, oobCode, password);
       toast.success("Password updated successfully!");
       navigate("/login");
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setLoading(false);
     }
   };
 

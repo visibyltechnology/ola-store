@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
+import { auth } from "@/integrations/firebase/client";
+import { sendPasswordResetEmail } from "firebase/auth";
 import somisteamLogo from "@/assets/somisteam-logo.jpg";
 import { Eye, EyeOff, Mail, Lock } from "lucide-react";
 
@@ -16,8 +17,13 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const [forgotMode, setForgotMode] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
-  const { signIn, isAdmin } = useAuth();
+  const { signIn, isAdmin, user } = useAuth();
   const navigate = useNavigate();
+
+  // Redirect if already logged in
+  useEffect(() => {
+    if (user) navigate(isAdmin ? "/admin" : "/dashboard", { replace: true });
+  }, [user, isAdmin, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,15 +33,27 @@ const Login = () => {
     }
     setLoading(true);
     const { error } = await signIn(email, password);
-    setLoading(false);
     if (error) {
+      setLoading(false);
       toast.error(error.message);
     } else {
       toast.success("Welcome back!");
-      // Small delay to let isAdmin resolve from auth state change
-      setTimeout(() => {
-        navigate("/dashboard");
-      }, 100);
+      // Explicitly check the profile to avoid race condition with AuthContext
+      import("@/integrations/firebase/client").then(async ({ db, auth }) => {
+        const { doc, getDoc } = await import("firebase/firestore");
+        if (auth.currentUser) {
+          try {
+            const profileDoc = await getDoc(doc(db, "profiles", auth.currentUser.uid));
+            const isUserAdmin = profileDoc.exists() && profileDoc.data().isAdmin === true;
+            navigate(isUserAdmin ? "/admin" : "/dashboard");
+          } catch {
+            navigate("/dashboard");
+          }
+        } else {
+          navigate("/dashboard");
+        }
+        setLoading(false);
+      });
     }
   };
 
@@ -46,15 +64,16 @@ const Login = () => {
       return;
     }
     setResetLoading(true);
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/reset-password`,
-    });
-    setResetLoading(false);
-    if (error) {
-      toast.error(error.message);
-    } else {
+    try {
+      await sendPasswordResetEmail(auth, email, {
+        url: `${window.location.origin}/reset-password`,
+      });
       toast.success("Password reset link sent! Check your email.");
       setForgotMode(false);
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setResetLoading(false);
     }
   };
 

@@ -1,18 +1,18 @@
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, ShoppingBag, CreditCard, Check, Loader2 } from "lucide-react";
+import { ArrowLeft, ShoppingBag, CreditCard, Check, Loader2, ShoppingCart, Zap } from "lucide-react";
 import { useState, useEffect } from "react";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 import { products as staticProducts, formatPrice, calculateInstallment } from "@/data/products";
 import { Slider } from "@/components/ui/slider";
+import { useCart } from "@/contexts/CartContext";
 import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/integrations/supabase/client";
+import { db } from "@/integrations/firebase/client";
+import { doc, getDoc } from "firebase/firestore";
 import { toast } from "sonner";
-import korapayLogo from "@/assets/korapay-logo.png";
-
-type Gateway = "korapay";
+import { isProductInStock } from "@/services/inventoryService";
 
 interface ProductData {
   id: string;
@@ -25,18 +25,21 @@ interface ProductData {
   features: string[];
   minDeposit: number;
   maxInstallmentMonths: number;
+  inStock: boolean;
 }
 
 const ProductDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { addToCart, items } = useCart();
   const { user } = useAuth();
-
   const [product, setProduct] = useState<ProductData | null>(null);
   const [loading, setLoading] = useState(true);
   const [depositAmount, setDepositAmount] = useState(0);
-  const [selectedGateway] = useState<Gateway>("korapay");
-  const [loadingPayment, setLoadingPayment] = useState(false);
+
+  // Check if this product is already in cart
+  const inCartFull = items.some((i) => i.id === (id ?? "") && i.paymentMode === "full");
+  const inCartInstallment = items.some((i) => i.id === (id ?? "") && i.paymentMode === "installment");
 
   useEffect(() => {
     const load = async () => {
@@ -54,33 +57,40 @@ const ProductDetail = () => {
           features: staticMatch.features,
           minDeposit: staticMatch.minDeposit,
           maxInstallmentMonths: staticMatch.maxInstallmentMonths,
+          inStock: true,
         });
         setDepositAmount(staticMatch.minDeposit);
         setLoading(false);
         return;
       }
 
-      // Otherwise fetch from Supabase by UUID (admin-added products)
-      const { data, error } = await supabase
-        .from("products")
-        .select("*")
-        .eq("id", id)
-        .single();
+      // Otherwise fetch from Firestore by UUID (admin-added products)
+      if (id) {
+        try {
+          const docRef = doc(db, "products", id);
+          const docSnap = await getDoc(docRef);
 
-      if (!error && data) {
-        setProduct({
-          id: data.id,
-          name: data.name,
-          brand: data.brand || "Olas & Bs",
-          category: data.category || "Electronics",
-          price: data.price,
-          description: data.description || "",
-          image: data.images?.[0] || "",
-          features: data.features || [],
-          minDeposit: data.min_deposit || Math.round(data.price * 0.2),
-          maxInstallmentMonths: data.max_installment_months || 6,
-        });
-        setDepositAmount(data.min_deposit || Math.round(data.price * 0.2));
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            const minDep = data.min_deposit || Math.round(data.price * 0.2);
+            setProduct({
+              id: docSnap.id,
+              name: data.name,
+              brand: data.brand || "Olas & Bs",
+              category: data.category || "Electronics",
+              price: data.price,
+              description: data.description || "",
+              image: data.images?.[0] || "",
+              features: data.features || [],
+              minDeposit: minDep,
+              maxInstallmentMonths: data.max_installment_months || 6,
+              inStock: isProductInStock(data as any),
+            });
+            setDepositAmount(minDep);
+          }
+        } catch (error) {
+          console.error("Error fetching product:", error);
+        }
       }
       setLoading(false);
     };
@@ -89,69 +99,64 @@ const ProductDetail = () => {
 
   const installment = product ? calculateInstallment(product.price, depositAmount) : null;
 
-  const handlePayment = async (type: "full_payment" | "deposit") => {
-    if (!user) {
-      toast.error("Please log in to make a purchase");
-      navigate("/login");
-      return;
-    }
-    if (!product || !installment) return;
+  const handleAddToCart = () => {
+    if (!product) return;
+    addToCart({
+      id: product.id,
+      name: product.name,
+      price: product.price,
+      image: product.image,
+      brand: product.brand,
+      paymentMode: "full",
+    });
+  };
 
-    setLoadingPayment(true);
-    try {
-      const amount = type === "full_payment" ? product.price : depositAmount;
-      const interestRate = type === "deposit" ? installment.interestRate : 0;
-      const totalPayable = type === "deposit" ? installment.totalPayable : product.price;
-      const remainingBalance = type === "deposit" ? installment.balance : 0;
+  const handleAddInstallmentToCart = () => {
+    if (!product) return;
+    addToCart({
+      id: product.id,
+      name: product.name,
+      price: product.price,
+      image: product.image,
+      brand: product.brand,
+      paymentMode: "installment",
+      depositAmount: depositAmount,
+      minDeposit: product.minDeposit,
+      maxInstallmentMonths: product.maxInstallmentMonths,
+    });
+  };
 
-      // Step 1: Create the order in Supabase
-      const { data: order, error: orderError } = await supabase
-        .from("orders")
-        .insert({
-          user_id: user.id,
-          product_id: product.id,
-          product_name: product.name,
-          product_price: product.price,
-          payment_type: type,
-          deposit_amount: type === "deposit" ? depositAmount : product.price,
-          interest_rate: interestRate,
-          total_payable: totalPayable,
-          remaining_balance: remainingBalance,
-          total_paid: 0,
-          installment_months: type === "deposit" ? product.maxInstallmentMonths : 0,
-          status: "pending",
-        })
-        .select()
-        .single();
-
-      if (orderError) throw new Error("Failed to create order: " + orderError.message);
-
-      // Step 2: Call initialize-kora-payment with the order id
-      const redirectUrl = `${window.location.origin}/payment/callback?order_id=${order.id}`;
-
-      const { data, error } = await supabase.functions.invoke("initialize-kora-payment", {
-        body: {
-          order_id: order.id,
-          amount,
-          customer_email: user.email,
-          customer_name: user.user_metadata?.full_name || user.email,
-          redirect_url: redirectUrl,
-        },
+  const handleBuyNow = () => {
+    if (!product) return;
+    if (!inCartFull) {
+      addToCart({
+        id: product.id,
+        name: product.name,
+        price: product.price,
+        image: product.image,
+        brand: product.brand,
+        paymentMode: "full",
       });
-
-      if (error) throw error;
-      const checkoutUrl = data?.checkout_url || data?.payment_url;
-      if (checkoutUrl) {
-        window.location.href = checkoutUrl;
-      } else {
-        throw new Error(data?.error || "No payment URL received");
-      }
-    } catch (err: any) {
-      console.error("Payment error:", err);
-      toast.error(err.message || "Payment initialization failed. Please try again.");
-    } finally {
-      setLoadingPayment(false);
     }
+    navigate("/checkout");
+  };
+
+  const handlePayDepositNow = () => {
+    if (!product) return;
+    if (!inCartInstallment) {
+      addToCart({
+        id: product.id,
+        name: product.name,
+        price: product.price,
+        image: product.image,
+        brand: product.brand,
+        paymentMode: "installment",
+        depositAmount: depositAmount,
+        minDeposit: product.minDeposit,
+        maxInstallmentMonths: product.maxInstallmentMonths,
+      });
+    }
+    navigate("/checkout");
   };
 
   if (loading) {
@@ -204,6 +209,11 @@ const ProductDetail = () => {
               ) : (
                 <ShoppingBag className="w-32 h-32 text-muted-foreground/30" />
               )}
+              {!product.inStock && (
+                <div className="absolute top-8 right-8 px-4 py-2 bg-destructive text-destructive-foreground text-sm font-bold rounded-full shadow-lg">
+                  Out of Stock
+                </div>
+              )}
             </motion.div>
 
             {/* Details */}
@@ -230,32 +240,46 @@ const ProductDetail = () => {
                 </div>
               )}
 
-              <div className="text-3xl font-display font-bold text-foreground mb-6">
+              <div className="text-3xl font-display font-bold text-foreground mb-8">
                 {formatPrice(product.price)}
-              </div>
-
-              {/* Payment secured by KoraPay */}
-              <div className="flex items-center gap-2 mb-5 px-3 py-2 bg-secondary/60 rounded-xl border border-border w-fit">
-                <span className="text-xs text-muted-foreground font-medium">Secured by</span>
-                <img src={korapayLogo} alt="KoraPay" className="h-5 object-contain" />
               </div>
 
               {/* Purchase Options */}
               <div className="space-y-4 mb-8">
-                <Button
-                  onClick={() => handlePayment("full_payment")}
-                  disabled={loadingPayment}
-                  className="w-full bg-gradient-gold text-accent-foreground font-semibold py-6 text-base rounded-xl hover:opacity-90 shadow-gold"
-                >
-                  {loadingPayment ? <Loader2 className="mr-2 w-5 h-5 animate-spin" /> : <ShoppingBag className="mr-2 w-5 h-5" />}
-                  Buy Now – {formatPrice(product.price)}
-                </Button>
 
+                {/* Add to Cart — Full Purchase */}
+                <div className="flex gap-3">
+                  <Button
+                    onClick={handleAddToCart}
+                    disabled={!product.inStock}
+                    variant="outline"
+                    className="flex-1 border-accent text-accent hover:bg-accent hover:text-accent-foreground py-6 rounded-xl disabled:opacity-50"
+                  >
+                    <ShoppingCart className="mr-2 w-5 h-5" />
+                    {inCartFull ? "In Cart ✓" : "Add to Cart"}
+                  </Button>
+                  <Button
+                    onClick={handleBuyNow}
+                    disabled={!product.inStock}
+                    className="flex-1 bg-gradient-gold text-accent-foreground font-semibold py-6 rounded-xl hover:opacity-90 shadow-gold disabled:opacity-50 disabled:shadow-none"
+                  >
+                    <Zap className="mr-2 w-5 h-5" />
+                    Buy Now – {formatPrice(product.price)}
+                  </Button>
+                  <p className="text-xs text-muted-foreground mt-2 text-center">
+                    Want it now but pay later? Choose <strong>Klump</strong> at checkout to split this into 4 payments and get your item immediately!
+                  </p>
+                </div>
+
+                {/* Installment Panel */}
                 <div className="bg-card border border-border rounded-2xl p-6">
-                  <div className="flex items-center gap-2 mb-4">
+                  <div className="flex items-center gap-2 mb-1">
                     <CreditCard className="w-5 h-5 text-accent" />
-                    <h3 className="font-display font-semibold text-foreground">Save to Buy Installment</h3>
+                    <h3 className="font-display font-semibold text-foreground">Save to Buy (Layaway)</h3>
                   </div>
+                  <p className="text-xs text-muted-foreground mb-4">
+                    Pay a deposit today to lock in the price. Pay the rest at your own pace. Your item ships once fully paid.
+                  </p>
 
                   <div className="mb-4">
                     <div className="flex justify-between text-sm mb-2">
@@ -298,13 +322,21 @@ const ProductDetail = () => {
                   )}
 
                   <Button
-                    onClick={() => handlePayment("deposit")}
-                    disabled={loadingPayment}
+                    onClick={handleAddInstallmentToCart}
+                    disabled={!product.inStock}
                     variant="outline"
-                    className="w-full border-accent text-accent hover:bg-accent hover:text-accent-foreground py-5 rounded-xl"
+                    className="w-full border-border text-foreground hover:bg-secondary py-4 rounded-xl mb-2 disabled:opacity-50"
                   >
-                    {loadingPayment ? <Loader2 className="mr-2 w-5 h-5 animate-spin" /> : <CreditCard className="mr-2 w-5 h-5" />}
-                    Pay Deposit – {formatPrice(depositAmount)}
+                    <ShoppingCart className="mr-2 w-4 h-4" />
+                    {inCartInstallment ? "Deposit in Cart ✓" : `Add Deposit to Cart – ${formatPrice(depositAmount)}`}
+                  </Button>
+                  <Button
+                    onClick={handlePayDepositNow}
+                    disabled={!product.inStock}
+                    className="w-full bg-gradient-gold text-accent-foreground font-semibold py-5 rounded-xl hover:opacity-90 shadow-gold disabled:opacity-50 disabled:shadow-none"
+                  >
+                    <CreditCard className="mr-2 w-5 h-5" />
+                    Checkout Deposit – {formatPrice(depositAmount)}
                   </Button>
                 </div>
               </div>

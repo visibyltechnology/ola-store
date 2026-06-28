@@ -11,7 +11,9 @@ import {
   Pencil, Tag, History, ChevronRight
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/integrations/supabase/client";
+import { db, auth } from "@/integrations/firebase/client";
+import { collection, query, orderBy, limit, getDocs, doc, getDoc, setDoc, updateDoc, deleteDoc, addDoc } from "firebase/firestore";
+import { uploadImages } from "@/services/cloudinaryService";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,6 +23,8 @@ import { toast } from "sonner";
 import { formatPrice } from "@/data/products";
 import { Badge } from "@/components/ui/badge";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from "recharts";
+import { getOrderStatusConfig, formatOrderId } from "@/utils/orderStatusHelper";
+import { updateOrderStatus, ORDER_STATUS } from "@/services/orderTrackingService";
 
 interface DBProduct {
   id: string;
@@ -28,12 +32,19 @@ interface DBProduct {
   brand: string;
   category: string;
   description: string | null;
+  overview: string | null;
   price: number;
+  original_price: number | null;
+  badge: string | null;
   min_deposit: number;
   max_installment_months: number;
   features: string[] | null;
   images: string[] | null;
   available: boolean;
+  stock_count: number;
+  unlimited_stock: boolean;
+  inventory_status: string;
+  sales: number;
   created_at: string;
 }
 
@@ -46,6 +57,9 @@ interface DBOrder {
   total_paid: number;
   remaining_balance: number;
   status: string;
+  tracking_status?: string;
+  status_history?: any[];
+  delivery_token?: string | null;
   created_at: string;
   user_id: string;
   installment_months: number | null;
@@ -168,7 +182,7 @@ const AdminDashboard = () => {
 
   const [showEditProduct, setShowEditProduct] = useState(false);
   const [editingProduct, setEditingProduct] = useState<DBProduct | null>(null);
-  const [editForm, setEditForm] = useState({ name: "", brand: "", category: "", description: "", price: "", min_deposit: "", max_installment_months: "", features: "" });
+  const [editForm, setEditForm] = useState({ name: "", brand: "", category: "", description: "", overview: "", price: "", original_price: "", badge: "", min_deposit: "", max_installment_months: "", features: "", stock_count: "0", unlimited_stock: true, available: true });
   const [editImages, setEditImages] = useState<File[]>([]);
   const editFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -187,8 +201,9 @@ const AdminDashboard = () => {
 
   const [newProduct, setNewProduct] = useState({
     name: "", brand: "Hisense", category: "Televisions",
-    description: "", price: "", min_deposit: "", max_installment_months: "6",
-    features: "",
+    description: "", overview: "", price: "", original_price: "", badge: "",
+    min_deposit: "", max_installment_months: "6",
+    features: "", stock_count: "0", unlimited_stock: true, available: true
   });
 
   useEffect(() => {
@@ -200,64 +215,65 @@ const AdminDashboard = () => {
   }, [user, isAdmin, authLoading]);
 
   const fetchData = async () => {
-    const [productsRes, ordersRes, paymentsRes, customersRes, activityRes, remindersRes] = await Promise.all([
-      supabase.from("products").select("*").order("created_at", { ascending: false }),
-      supabase.from("orders").select("*").order("created_at", { ascending: false }),
-      supabase.from("payments").select("*").order("created_at", { ascending: false }),
-      supabase.from("profiles").select("*").order("created_at", { ascending: false }),
-      supabase.from("activity_logs").select("*").order("created_at", { ascending: false }).limit(200),
-      supabase.from("installment_reminders").select("*").order("created_at", { ascending: false }).limit(100),
-    ]);
-    if (productsRes.data) setProducts(productsRes.data);
-    if (ordersRes.data) setOrders(ordersRes.data);
-    if (paymentsRes.data) setPayments(paymentsRes.data);
-    if (customersRes.data) setCustomers(customersRes.data);
-    if (activityRes.data) setActivityLogs(activityRes.data as DBActivityLog[]);
-    if (remindersRes.data) setReminders(remindersRes.data);
-    setLoading(false);
+    try {
+      const [productsSnap, ordersSnap, paymentsSnap, customersSnap, activitySnap, remindersSnap, gatewaySnap, waSnap] = await Promise.all([
+        getDocs(query(collection(db, "products"), orderBy("created_at", "desc"))),
+        getDocs(query(collection(db, "orders"), orderBy("created_at", "desc"))),
+        getDocs(query(collection(db, "payments"), orderBy("created_at", "desc"))),
+        getDocs(query(collection(db, "profiles"), orderBy("created_at", "desc"))),
+        getDocs(query(collection(db, "activity_logs"), orderBy("created_at", "desc"), limit(200))),
+        getDocs(query(collection(db, "installment_reminders"), orderBy("created_at", "desc"), limit(100))),
+        getDoc(doc(db, "payment_settings", "korapay")),
+        getDoc(doc(db, "site_settings", "whatsapp_number"))
+      ]);
 
-    // Fetch payment gateway settings
-    const { data: gatewayData } = await supabase
-      .from("payment_settings")
-      .select("*")
-      .eq("gateway", "korapay")
-      .maybeSingle();
-    if (gatewayData) {
-      setKoraSettings(gatewayData as PaymentGatewaySetting);
-      setKoraPublicKeyInput(gatewayData.public_key || "");
-      setKoraSecretKeyInput(gatewayData.secret_key || "");
+      setProducts(productsSnap.docs.map(d => ({ id: d.id, ...d.data() } as DBProduct)));
+      setOrders(ordersSnap.docs.map(d => ({ id: d.id, ...d.data() } as DBOrder)));
+      setPayments(paymentsSnap.docs.map(d => ({ id: d.id, ...d.data() } as DBPayment)));
+      setCustomers(customersSnap.docs.map(d => ({ id: d.id, ...d.data() } as DBProfile)));
+      setActivityLogs(activitySnap.docs.map(d => ({ id: d.id, ...d.data() } as DBActivityLog)));
+      setReminders(remindersSnap.docs.map(d => ({ id: d.id, ...d.data() } as DBInstallmentReminder)));
+
+      if (gatewaySnap.exists()) {
+        const gatewayData = gatewaySnap.data() as PaymentGatewaySetting;
+        setKoraSettings(gatewayData);
+        setKoraPublicKeyInput(gatewayData.public_key || "");
+        setKoraSecretKeyInput(gatewayData.secret_key || "");
+      }
+      
+      if (waSnap.exists()) {
+        setWhatsappInput(waSnap.data().value || "");
+      }
+    } catch (error) {
+      console.error("Error fetching data:", error);
+    } finally {
+      setLoading(false);
     }
-
-    // Fetch WhatsApp number
-    const { data: waData } = await supabase
-      .from("site_settings")
-      .select("value")
-      .eq("key", "whatsapp_number")
-      .maybeSingle();
-    if (waData) setWhatsappInput(waData.value || "");
   };
 
   const handleSaveWhatsapp = async () => {
     setSavingWhatsapp(true);
-    const { error } = await supabase
-      .from("site_settings")
-      .upsert({ key: "whatsapp_number", value: whatsappInput, updated_at: new Date().toISOString() }, { onConflict: "key" });
-    setSavingWhatsapp(false);
-    if (error) toast.error("Failed to save: " + error.message);
-    else toast.success("WhatsApp number saved! Button will appear on the site.");
+    try {
+      await setDoc(doc(db, "site_settings", "whatsapp_number"), { 
+        key: "whatsapp_number", 
+        value: whatsappInput, 
+        updated_at: new Date().toISOString() 
+      }, { merge: true });
+      toast.success("WhatsApp number saved! Button will appear on the site.");
+    } catch (error) {
+      toast.error("Failed to save: " + (error as Error).message);
+    } finally {
+      setSavingWhatsapp(false);
+    }
   };
 
   const handleImageUpload = async (files: File[]): Promise<string[]> => {
-    const urls: string[] = [];
-    for (const file of files) {
-      const ext = file.name.split(".").pop();
-      const path = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-      const { error } = await supabase.storage.from("product-images").upload(path, file);
-      if (error) { toast.error(`Failed to upload ${file.name}`); continue; }
-      const { data: urlData } = supabase.storage.from("product-images").getPublicUrl(path);
-      urls.push(urlData.publicUrl);
+    try {
+      return await uploadImages(files);
+    } catch (error: any) {
+      toast.error(`Image upload failed: ${error.message}`);
+      return [];
     }
-    return urls;
   };
 
   const handleAddProduct = async () => {
@@ -265,29 +281,45 @@ const AdminDashboard = () => {
     setUploadingImage(true);
     let imageUrls: string[] = [];
     if (productImages.length > 0) imageUrls = await handleImageUpload(productImages);
-    const { error } = await supabase.from("products").insert({
-      name: newProduct.name, brand: newProduct.brand, category: newProduct.category,
-      description: newProduct.description || null,
-      price: Number(newProduct.price), min_deposit: Number(newProduct.min_deposit) || 0,
-      max_installment_months: Number(newProduct.max_installment_months) || 6,
-      features: newProduct.features.split(",").map(f => f.trim()).filter(Boolean),
-      images: imageUrls.length > 0 ? imageUrls : null,
-    });
-    setUploadingImage(false);
-    if (error) { toast.error(error.message); }
-    else {
+    try {
+      await addDoc(collection(db, "products"), {
+        name: newProduct.name, brand: newProduct.brand, category: newProduct.category,
+        description: newProduct.description || null,
+        overview: newProduct.overview || null,
+        original_price: newProduct.original_price ? Number(newProduct.original_price) : null,
+        badge: newProduct.badge || null,
+        price: Number(newProduct.price), min_deposit: Number(newProduct.min_deposit) || 0,
+        max_installment_months: Number(newProduct.max_installment_months) || 6,
+        features: newProduct.features.split(",").map(f => f.trim()).filter(Boolean),
+        images: imageUrls.length > 0 ? imageUrls : null,
+        image: imageUrls[0] || null,
+        stock_count: parseInt(newProduct.stock_count) || 0,
+        unlimited_stock: newProduct.unlimited_stock,
+        inventory_status: newProduct.unlimited_stock || parseInt(newProduct.stock_count) > 0 ? "in_stock" : "out_of_stock",
+        available: newProduct.available,
+        sales: 0,
+        created_at: new Date().toISOString()
+      });
       toast.success("Product added!");
       setShowAddProduct(false);
-      setNewProduct({ name: "", brand: "Hisense", category: "Televisions", description: "", price: "", min_deposit: "", max_installment_months: "6", features: "" });
+      setNewProduct({ name: "", brand: "Hisense", category: "Televisions", description: "", overview: "", price: "", original_price: "", badge: "", min_deposit: "", max_installment_months: "6", features: "", stock_count: "0", unlimited_stock: true, available: true });
       setProductImages([]);
       fetchData();
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setUploadingImage(false);
     }
   };
 
   const handleDeleteProduct = async (id: string) => {
-    const { error } = await supabase.from("products").delete().eq("id", id);
-    if (error) toast.error(error.message);
-    else { toast.success("Product deleted"); fetchData(); }
+    try {
+      await deleteDoc(doc(db, "products", id));
+      toast.success("Product deleted");
+      fetchData();
+    } catch (error) {
+      toast.error((error as Error).message);
+    }
   };
 
   const openEditProduct = (product: DBProduct) => {
@@ -297,10 +329,16 @@ const AdminDashboard = () => {
       brand: product.brand,
       category: product.category,
       description: product.description || "",
+      overview: product.overview || "",
       price: String(product.price),
+      original_price: product.original_price ? String(product.original_price) : "",
+      badge: product.badge || "",
       min_deposit: String(product.min_deposit),
       max_installment_months: String(product.max_installment_months),
       features: (product.features || []).join(", "),
+      stock_count: product.stock_count?.toString() || "0",
+      unlimited_stock: product.unlimited_stock !== false,
+      available: product.available !== false
     });
     setEditImages([]);
     setShowEditProduct(true);
@@ -314,34 +352,47 @@ const AdminDashboard = () => {
       const newUrls = await handleImageUpload(editImages);
       imageUrls = [...imageUrls, ...newUrls];
     }
-    const { error } = await supabase.from("products").update({
-      name: editForm.name,
-      brand: editForm.brand,
-      category: editForm.category,
-      description: editForm.description || null,
-      price: Number(editForm.price),
-      min_deposit: Number(editForm.min_deposit) || 0,
-      max_installment_months: Number(editForm.max_installment_months) || 6,
-      features: editForm.features.split(",").map(f => f.trim()).filter(Boolean),
-      images: imageUrls.length > 0 ? imageUrls : null,
-    }).eq("id", editingProduct.id);
-    setUploadingImage(false);
-    if (error) { toast.error(error.message); }
-    else {
+    try {
+      await updateDoc(doc(db, "products", editingProduct.id), {
+        name: editForm.name,
+        brand: editForm.brand,
+        category: editForm.category,
+        description: editForm.description || null,
+        overview: editForm.overview || null,
+        original_price: editForm.original_price ? Number(editForm.original_price) : null,
+        badge: editForm.badge || null,
+        price: Number(editForm.price),
+        min_deposit: Number(editForm.min_deposit) || 0,
+        max_installment_months: parseInt(editForm.max_installment_months),
+        features: editForm.features.split(",").map(f => f.trim()).filter(Boolean),
+        images: imageUrls.length > 0 ? imageUrls : null,
+        image: imageUrls[0] || editingProduct.images?.[0] || null,
+        stock_count: parseInt(editForm.stock_count) || 0,
+        unlimited_stock: editForm.unlimited_stock,
+        inventory_status: editForm.unlimited_stock || parseInt(editForm.stock_count) > 0 ? "in_stock" : "out_of_stock",
+        available: editForm.available,
+        updated_at: new Date().toISOString()
+      });
       toast.success("Product updated!");
       setShowEditProduct(false);
       setEditingProduct(null);
       fetchData();
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setUploadingImage(false);
     }
   };
 
   const loadCategories = async () => {
-    const { data } = await supabase.from("site_settings").select("value").eq("key", "product_categories").maybeSingle();
-    if (data?.value) {
-      try {
-        const cats = JSON.parse(data.value as string);
+    try {
+      const snap = await getDoc(doc(db, "site_settings", "product_categories"));
+      if (snap.exists() && snap.data().value) {
+        const cats = JSON.parse(snap.data().value as string);
         if (Array.isArray(cats) && cats.length > 0) setDynamicCategories(cats);
-      } catch {}
+      }
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -350,24 +401,37 @@ const AdminDashboard = () => {
     if (!trimmed || dynamicCategories.includes(trimmed)) return;
     const updated = [...dynamicCategories, trimmed];
     setSavingCategories(true);
-    await supabase.from("site_settings").upsert({ key: "product_categories", value: JSON.stringify(updated), updated_at: new Date().toISOString() }, { onConflict: "key" });
-    setDynamicCategories(updated);
-    setNewCategoryInput("");
-    setSavingCategories(false);
-    toast.success("Category added");
+    try {
+      await setDoc(doc(db, "site_settings", "product_categories"), { key: "product_categories", value: JSON.stringify(updated), updated_at: new Date().toISOString() }, { merge: true });
+      setDynamicCategories(updated);
+      setNewCategoryInput("");
+      toast.success("Category added");
+    } catch (e) {
+      toast.error("Failed to add category");
+    } finally {
+      setSavingCategories(false);
+    }
   };
 
   const handleRemoveCategory = async (cat: string) => {
     const updated = dynamicCategories.filter(c => c !== cat);
-    await supabase.from("site_settings").upsert({ key: "product_categories", value: JSON.stringify(updated), updated_at: new Date().toISOString() }, { onConflict: "key" });
-    setDynamicCategories(updated);
-    toast.success("Category removed");
+    try {
+      await setDoc(doc(db, "site_settings", "product_categories"), { key: "product_categories", value: JSON.stringify(updated), updated_at: new Date().toISOString() }, { merge: true });
+      setDynamicCategories(updated);
+      toast.success("Category removed");
+    } catch (e) {
+      toast.error("Failed to remove category");
+    }
   };
 
   const handleUpdateOrderStatus = async (orderId: string, status: string) => {
-    const { error } = await supabase.from("orders").update({ status: status as any }).eq("id", orderId);
-    if (error) toast.error(error.message);
-    else { toast.success("Status updated"); fetchData(); }
+    try {
+      await updateOrderStatus(orderId, status as any, "Status updated by admin");
+      toast.success("Status updated");
+      fetchData();
+    } catch (error: any) {
+      toast.error(error.message);
+    }
   };
 
   const handleSendReminder = async (order: DBOrder) => {
@@ -377,10 +441,8 @@ const AdminDashboard = () => {
       ? Math.floor((Date.now() - new Date(order.next_payment_due).getTime()) / (1000 * 60 * 60 * 24))
       : 0;
 
-    // Get customer email from supabase auth (we use profiles for name/phone)
-    // For now, log the reminder with available info and call the edge function
-    const { data: session } = await supabase.auth.getSession();
-    const token = session.session?.access_token;
+    // We need the customer's email — we'll grab from auth context/user or just a placeholder if not found.
+    const token = await auth.currentUser?.getIdToken();
 
     if (!token) { toast.error("Session expired, please re-login"); setSendingReminder(null); return; }
 
@@ -421,32 +483,35 @@ const AdminDashboard = () => {
 
   const handleSaveKoraSettings = async () => {
     setSavingKora(true);
-    const updates: Partial<PaymentGatewaySetting> = {
+    const updates: Partial<PaymentGatewaySetting> & { updated_at: string } = {
       public_key: koraPublicKeyInput,
       updated_at: new Date().toISOString(),
     };
     if (koraSecretKeyInput && koraSecretKeyInput !== maskKey(koraSettings.secret_key)) {
       updates.secret_key = koraSecretKeyInput;
     }
-    const { error } = await supabase
-      .from("payment_settings")
-      .update(updates)
-      .eq("gateway", "korapay");
-    setSavingKora(false);
-    if (error) { toast.error("Failed to save: " + error.message); }
-    else { toast.success("KoraPay settings saved successfully"); fetchData(); }
+    try {
+      await setDoc(doc(db, "payment_settings", "korapay"), updates, { merge: true });
+      toast.success("KoraPay settings saved successfully"); 
+      fetchData();
+    } catch (error) {
+      toast.error("Failed to save: " + (error as Error).message);
+    } finally {
+      setSavingKora(false);
+    }
   };
 
   const handleToggleKora = async () => {
     const newEnabled = !koraSettings.enabled;
-    const { error } = await supabase
-      .from("payment_settings")
-      .update({ enabled: newEnabled, updated_at: new Date().toISOString() })
-      .eq("gateway", "korapay");
-    if (error) { toast.error("Failed to update: " + error.message); }
-    else {
+    try {
+      await updateDoc(doc(db, "payment_settings", "korapay"), { 
+        enabled: newEnabled, 
+        updated_at: new Date().toISOString() 
+      });
       setKoraSettings(s => ({ ...s, enabled: newEnabled }));
       toast.success(`KoraPay ${newEnabled ? "enabled" : "disabled"}`);
+    } catch (error) {
+      toast.error("Failed to update: " + (error as Error).message);
     }
   };
 
@@ -753,21 +818,55 @@ const AdminDashboard = () => {
                       </div>
                       <div>
                         <label className="text-sm font-medium text-foreground mb-1 block">Description</label>
-                        <Textarea value={newProduct.description} onChange={e => setNewProduct({ ...newProduct, description: e.target.value })} className="rounded-xl" />
+                        <Textarea value={newProduct.description} onChange={e => setNewProduct({ ...newProduct, description: e.target.value })} className="rounded-xl" rows={3} />
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium text-foreground mb-1 block">Overview <span className="text-muted-foreground text-xs">(short blurb shown on product page)</span></label>
+                        <Textarea value={newProduct.overview} onChange={e => setNewProduct({ ...newProduct, overview: e.target.value })} className="rounded-xl" rows={2} placeholder="e.g. The ultimate smart TV for your home..." />
                       </div>
                       <div className="grid grid-cols-2 gap-4">
                         <div>
-                          <label className="text-sm font-medium text-foreground mb-1 block">Price (₦)</label>
+                          <label className="text-sm font-medium text-foreground mb-1 block">Selling Price (₦)</label>
                           <Input type="number" value={newProduct.price} onChange={e => setNewProduct({ ...newProduct, price: e.target.value })} className="rounded-xl" />
                         </div>
                         <div>
+                          <label className="text-sm font-medium text-foreground mb-1 block">Original Price (₦) <span className="text-muted-foreground text-xs">for discount</span></label>
+                          <Input type="number" value={newProduct.original_price} onChange={e => setNewProduct({ ...newProduct, original_price: e.target.value })} className="rounded-xl" placeholder="Leave blank if no discount" />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
                           <label className="text-sm font-medium text-foreground mb-1 block">Min Deposit (₦)</label>
                           <Input type="number" value={newProduct.min_deposit} onChange={e => setNewProduct({ ...newProduct, min_deposit: e.target.value })} className="rounded-xl" />
+                        </div>
+                        <div>
+                          <label className="text-sm font-medium text-foreground mb-1 block">Product Badge</label>
+                          <Select value={newProduct.badge} onValueChange={v => setNewProduct({ ...newProduct, badge: v })}>
+                            <SelectTrigger className="rounded-xl"><SelectValue placeholder="None" /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="">None</SelectItem>
+                              {["Best Seller","New Arrival","Hot Deal","Top Rated","Trending","Clearance","Premium","Limited"].map(b => <SelectItem key={b} value={b}>{b}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
                         </div>
                       </div>
                       <div>
                         <label className="text-sm font-medium text-foreground mb-1 block">Max Installment Months</label>
                         <Input type="number" value={newProduct.max_installment_months} onChange={e => setNewProduct({ ...newProduct, max_installment_months: e.target.value })} className="rounded-xl" />
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="text-sm font-medium text-foreground mb-1 block">Stock Count</label>
+                          <Input type="number" disabled={newProduct.unlimited_stock} value={newProduct.stock_count} onChange={e => setNewProduct({ ...newProduct, stock_count: e.target.value })} className="rounded-xl" />
+                        </div>
+                        <div className="flex items-center gap-2 mt-7">
+                          <input type="checkbox" id="unlimited" checked={newProduct.unlimited_stock} onChange={e => setNewProduct({ ...newProduct, unlimited_stock: e.target.checked })} className="rounded text-accent" />
+                          <label htmlFor="unlimited" className="text-sm text-foreground">Unlimited Stock</label>
+                        </div>
+                        <div className="flex items-center gap-2 mt-4">
+                          <input type="checkbox" id="add-available" checked={newProduct.available} onChange={e => setNewProduct({ ...newProduct, available: e.target.checked })} className="rounded text-accent" />
+                          <label htmlFor="add-available" className="text-sm font-medium cursor-pointer">Product is Active (Visible on site)</label>
+                        </div>
                       </div>
                       <div>
                         <label className="text-sm font-medium text-foreground mb-1 block">Features (comma-separated)</label>
@@ -822,16 +921,33 @@ const AdminDashboard = () => {
                       <p className="text-[10px] text-muted-foreground">{product.brand} • {product.category}</p>
                       <p className="text-xs font-bold text-accent mt-0.5">{formatPrice(product.price)}</p>
                     </div>
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <Badge variant="outline" className={product.available ? "text-green-600 border-green-200 bg-green-50 text-[10px]" : "text-red-600 border-red-200 bg-red-50 text-[10px]"}>
-                        {product.available ? "Active" : "Inactive"}
-                      </Badge>
-                      <Button size="icon" variant="ghost" onClick={() => openEditProduct(product)} className="text-accent w-7 h-7">
-                        <Pencil className="w-3.5 h-3.5" />
-                      </Button>
-                      <Button size="icon" variant="ghost" onClick={() => handleDeleteProduct(product.id)} className="text-destructive w-7 h-7">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </Button>
+                    <div className="flex flex-col items-end gap-2 flex-shrink-0">
+                      <div className="flex gap-2">
+                        <Badge variant="outline" className={product.available ? "text-green-600 border-green-200 bg-green-50 text-[10px]" : "text-red-600 border-red-200 bg-red-50 text-[10px]"}>
+                          {product.available ? "Active" : "Inactive"}
+                        </Badge>
+                        <button 
+                          onClick={() => {
+                            updateDoc(doc(db, "products", product.id), { available: !product.available })
+                              .then(() => { toast.success("Status updated"); fetchData(); })
+                              .catch(e => toast.error(e.message));
+                          }}
+                          className={`ml-2 text-xs hover:underline ${product.available ? "text-amber-600" : "text-green-600"}`}
+                        >
+                          Make {product.available ? "Inactive" : "Active"}
+                        </button>
+                        <Badge variant="outline" className={product.unlimited_stock || product.stock_count > 0 ? "text-blue-600 border-blue-200 bg-blue-50 text-[10px]" : "text-orange-600 border-orange-200 bg-orange-50 text-[10px]"}>
+                          {product.unlimited_stock ? "∞ Stock" : `${product.stock_count} in stock`}
+                        </Badge>
+                      </div>
+                      <div className="flex gap-2 mt-1">
+                        <Button size="icon" variant="ghost" onClick={() => openEditProduct(product)} className="text-accent w-7 h-7">
+                          <Pencil className="w-3.5 h-3.5" />
+                        </Button>
+                        <Button size="icon" variant="ghost" onClick={() => handleDeleteProduct(product.id)} className="text-destructive w-7 h-7">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
                     </div>
                   </motion.div>
                 ))}
@@ -870,21 +986,55 @@ const AdminDashboard = () => {
                     </div>
                     <div>
                       <label className="text-sm font-medium text-foreground mb-1 block">Description</label>
-                      <Textarea value={editForm.description} onChange={e => setEditForm({ ...editForm, description: e.target.value })} className="rounded-xl" />
+                      <Textarea value={editForm.description} onChange={e => setEditForm({ ...editForm, description: e.target.value })} className="rounded-xl" rows={3} />
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium text-foreground mb-1 block">Overview <span className="text-muted-foreground text-xs">(short blurb on product page)</span></label>
+                      <Textarea value={editForm.overview} onChange={e => setEditForm({ ...editForm, overview: e.target.value })} className="rounded-xl" rows={2} placeholder="e.g. The ultimate smart TV for your home..." />
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <label className="text-sm font-medium text-foreground mb-1 block">Price (₦)</label>
+                        <label className="text-sm font-medium text-foreground mb-1 block">Selling Price (₦)</label>
                         <Input type="number" value={editForm.price} onChange={e => setEditForm({ ...editForm, price: e.target.value })} className="rounded-xl" />
                       </div>
                       <div>
+                        <label className="text-sm font-medium text-foreground mb-1 block">Original Price (₦) <span className="text-muted-foreground text-xs">for discount</span></label>
+                        <Input type="number" value={editForm.original_price} onChange={e => setEditForm({ ...editForm, original_price: e.target.value })} className="rounded-xl" placeholder="Leave blank if no discount" />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
                         <label className="text-sm font-medium text-foreground mb-1 block">Min Deposit (₦)</label>
                         <Input type="number" value={editForm.min_deposit} onChange={e => setEditForm({ ...editForm, min_deposit: e.target.value })} className="rounded-xl" />
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium text-foreground mb-1 block">Product Badge</label>
+                        <Select value={editForm.badge} onValueChange={v => setEditForm({ ...editForm, badge: v })}>
+                          <SelectTrigger className="rounded-xl"><SelectValue placeholder="None" /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="">None</SelectItem>
+                            {["Best Seller","New Arrival","Hot Deal","Top Rated","Trending","Clearance","Premium","Limited"].map(b => <SelectItem key={b} value={b}>{b}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
                       </div>
                     </div>
                     <div>
                       <label className="text-sm font-medium text-foreground mb-1 block">Max Installment Months</label>
                       <Input type="number" value={editForm.max_installment_months} onChange={e => setEditForm({ ...editForm, max_installment_months: e.target.value })} className="rounded-xl" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-sm font-medium text-foreground mb-1 block">Stock Count</label>
+                        <Input type="number" disabled={editForm.unlimited_stock} value={editForm.stock_count} onChange={e => setEditForm({ ...editForm, stock_count: e.target.value })} className="rounded-xl" />
+                      </div>
+                      <div className="flex items-center gap-2 mt-7">
+                        <input type="checkbox" id="edit-unlimited" checked={editForm.unlimited_stock} onChange={e => setEditForm({ ...editForm, unlimited_stock: e.target.checked })} className="rounded text-accent" />
+                        <label htmlFor="edit-unlimited" className="text-sm cursor-pointer">Unlimited Stock</label>
+                      </div>
+                      <div className="flex items-center gap-2 mt-4">
+                        <input type="checkbox" id="edit-available" checked={editForm.available} onChange={e => setEditForm({ ...editForm, available: e.target.checked })} className="rounded text-accent" />
+                        <label htmlFor="edit-available" className="text-sm font-medium cursor-pointer">Product is Active (Visible on site)</label>
+                      </div>
                     </div>
                     <div>
                       <label className="text-sm font-medium text-foreground mb-1 block">Features (comma-separated)</label>
@@ -929,19 +1079,20 @@ const AdminDashboard = () => {
               <div className="text-xs text-muted-foreground mb-3">{filteredOrders.length} orders</div>
               <div className="space-y-2">
                 {filteredOrders.map((order, i) => {
-                  const StatusIcon = statusIcons[order.status] || Clock;
+                  const config = getOrderStatusConfig(order.status);
+                  const StatusIcon = config.icon;
                   const isOverdue = order.next_payment_due && new Date(order.next_payment_due) < new Date() && order.remaining_balance > 0;
                   return (
                     <motion.div key={order.id} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.03 }}
                       className={`bg-card rounded-xl p-4 shadow-sm border ${isOverdue ? "border-red-200 bg-red-50/30" : "border-border/50"}`}>
                       <div className="flex items-start justify-between gap-2 mb-3">
                         <div className="flex items-center gap-2">
-                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${statusColors[order.status]}`}>
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${config.badgeClass || config.colorClass}`}>
                             <StatusIcon className="w-3.5 h-3.5" />
                           </div>
                           <div>
                             <h3 className="text-xs font-semibold text-foreground">{order.product_name}</h3>
-                            <p className="text-[10px] text-muted-foreground">{new Date(order.created_at).toLocaleDateString()} • {order.payment_type.replace(/_/g, " ")}</p>
+                            <p className="text-[10px] text-muted-foreground">{formatOrderId(order.id)} • {new Date(order.created_at).toLocaleDateString()}</p>
                           </div>
                         </div>
                         {isOverdue && (
@@ -974,7 +1125,7 @@ const AdminDashboard = () => {
                       <Select value={order.status} onValueChange={v => handleUpdateOrderStatus(order.id, v)}>
                         <SelectTrigger className="w-full rounded-xl text-xs h-8"><SelectValue /></SelectTrigger>
                         <SelectContent>
-                          {["pending", "deposit_paid", "in_progress", "fully_paid", "ready_for_delivery", "delivered", "cancelled"].map(s => (
+                          {Object.values(ORDER_STATUS).map(s => (
                             <SelectItem key={s} value={s} className="capitalize text-xs">{s.replace(/_/g, " ")}</SelectItem>
                           ))}
                         </SelectContent>

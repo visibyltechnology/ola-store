@@ -6,10 +6,15 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
+import { createPaymentSuccessNotification } from "@/services/notificationService";
+import { useAuth } from "@/contexts/AuthContext";
+import { useCart } from "@/contexts/CartContext";
 
 const PaymentCallback = () => {
   const [searchParams] = useSearchParams();
   const [status, setStatus] = useState<"loading" | "success" | "cancelled" | "failed">("loading");
+  const { user } = useAuth();
+  const { clearCart } = useCart();
 
   useEffect(() => {
     const verify = async () => {
@@ -30,20 +35,32 @@ const PaymentCallback = () => {
         return;
       }
 
-      try {
-        const { data, error } = await supabase.functions.invoke("verify-kora-payment", {
-          body: { reference: ref },
-        });
-
-        if (error) {
-          setStatus("failed");
-          return;
+      // Handle Klump test payment references locally
+      if (ref.startsWith("klp-") && urlStatus === "success") {
+        setStatus("success");
+        clearCart();
+        if (user) {
+          createPaymentSuccessNotification(user.uid, ref, 0).catch(console.error);
         }
+        return;
+      }
+
+      try {
+        const { data: result, error } = await supabase.functions.invoke("verify-kora-payment", {
+          body: { reference: ref }
+        });
+        
+        if (error) throw error;
+        const data = result;
 
         // Check the actual payment status from KoraPay
         const koraStatus = data?.status?.toLowerCase();
         if (koraStatus === "success" && data?.verified) {
           setStatus("success");
+          clearCart();
+          if (user) {
+            createPaymentSuccessNotification(user.uid, ref, data?.data?.amount || 0).catch(console.error);
+          }
         } else if (koraStatus === "cancelled" || koraStatus === "canceled" || koraStatus === "abandoned") {
           setStatus("cancelled");
         } else {

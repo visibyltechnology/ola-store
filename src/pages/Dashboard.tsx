@@ -7,7 +7,8 @@ import {
   AlertCircle, User, Phone, MapPin, Receipt
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/integrations/supabase/client";
+import { db } from "@/integrations/firebase/client";
+import { collection, query, where, orderBy, getDocs, doc, getDoc, updateDoc } from "firebase/firestore";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -15,6 +16,7 @@ import { formatPrice } from "@/data/products";
 import { toast } from "sonner";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
+import { getOrderStatusConfig, formatOrderId, formatTimestamp } from "@/utils/orderStatusHelper";
 
 interface Order {
   id: string;
@@ -25,6 +27,9 @@ interface Order {
   total_paid: number;
   remaining_balance: number;
   status: string;
+  tracking_status?: string;
+  status_history?: any[];
+  delivery_token?: string | null;
   installment_months: number | null;
   next_payment_due: string | null;
   deposit_amount: number | null;
@@ -84,19 +89,31 @@ const Dashboard = () => {
 
   const fetchData = async () => {
     try {
-      const [ordersRes, paymentsRes, profileRes] = await Promise.all([
-        supabase.from("orders").select("*").order("created_at", { ascending: false }),
-        supabase.from("payments").select("*").order("created_at", { ascending: false }),
-        supabase.from("profiles").select("full_name, phone, address").eq("user_id", user!.id).maybeSingle(),
+      const ordersRef = collection(db, "orders");
+      const ordersQ = query(ordersRef, where("user_id", "==", user!.uid), orderBy("created_at", "desc"));
+      const paymentsRef = collection(db, "payments");
+      const paymentsQ = query(paymentsRef, where("user_id", "==", user!.uid), orderBy("created_at", "desc"));
+      const profileRef = doc(db, "profiles", user!.uid);
+
+      const [ordersSnap, paymentsSnap, profileSnap] = await Promise.all([
+        getDocs(ordersQ),
+        getDocs(paymentsQ),
+        getDoc(profileRef)
       ]);
-      if (ordersRes.data) setOrders(ordersRes.data);
-      if (paymentsRes.data) setPayments(paymentsRes.data);
-      if (profileRes.data) {
-        setProfile(profileRes.data);
+
+      const fetchedOrders = ordersSnap.docs.map(d => ({ id: d.id, ...d.data() } as Order));
+      const fetchedPayments = paymentsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Payment));
+
+      setOrders(fetchedOrders);
+      setPayments(fetchedPayments);
+
+      if (profileSnap.exists()) {
+        const profileData = profileSnap.data() as Profile;
+        setProfile(profileData);
         setProfileForm({
-          full_name: profileRes.data.full_name || "",
-          phone: profileRes.data.phone || "",
-          address: profileRes.data.address || "",
+          full_name: profileData.full_name || "",
+          phone: profileData.phone || "",
+          address: profileData.address || "",
         });
       }
     } catch {
@@ -107,15 +124,17 @@ const Dashboard = () => {
   };
 
   const handleUpdateProfile = async () => {
-    const { error } = await supabase
-      .from("profiles")
-      .update({ full_name: profileForm.full_name, phone: profileForm.phone, address: profileForm.address })
-      .eq("user_id", user!.id);
-    if (error) toast.error(error.message);
-    else {
+    try {
+      await updateDoc(doc(db, "profiles", user!.uid), {
+        full_name: profileForm.full_name,
+        phone: profileForm.phone,
+        address: profileForm.address
+      });
       toast.success("Profile updated!");
       setProfile(profileForm);
       setEditingProfile(false);
+    } catch (error) {
+      toast.error((error as Error).message);
     }
   };
 
@@ -254,7 +273,7 @@ const Dashboard = () => {
                 ) : (
                   <div className="space-y-3">
                     {orders.map((order, i) => {
-                      const config = statusConfig[order.status] || statusConfig.pending;
+                      const config = getOrderStatusConfig(order.tracking_status || order.status);
                       const StatusIcon = config.icon;
                       const isExpanded = expandedOrder === order.id;
                       const orderPayments = getOrderPayments(order.id);
@@ -274,17 +293,17 @@ const Dashboard = () => {
                           >
                             <div className="flex items-start justify-between gap-2 mb-3">
                               <div className="flex items-center gap-2.5">
-                                <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${config.color}`}>
+                                <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${config.badgeClass || config.colorClass}`}>
                                   <StatusIcon className="w-3.5 h-3.5" />
                                 </div>
                                 <div>
                                   <h3 className="text-xs font-semibold text-foreground leading-tight">{order.product_name}</h3>
                                   <p className="text-[10px] text-muted-foreground">
-                                    {order.payment_type.replace(/_/g, " ")} • {new Date(order.created_at).toLocaleDateString()}
+                                    {formatOrderId(order.id)} • {order.payment_type.replace(/_/g, " ")}
                                   </p>
                                 </div>
                               </div>
-                              <Badge variant="outline" className={`text-[9px] flex-shrink-0 ${config.color}`}>
+                              <Badge variant="outline" className={`text-[9px] flex-shrink-0 ${config.badgeClass || config.colorClass}`}>
                                 {config.label}
                               </Badge>
                             </div>
@@ -343,8 +362,51 @@ const Dashboard = () => {
                                 className="border-t border-border/50 overflow-hidden"
                               >
                                 <div className="p-4 bg-secondary/20">
+                                  {/* Tracking Stepper */}
+                                  <div className="mb-5">
+                                    <h4 className="text-[11px] font-semibold text-foreground mb-3 flex items-center gap-1">
+                                      <Truck className="w-3 h-3 text-accent" /> Tracking Status
+                                    </h4>
+                                    <div className="relative pl-3 space-y-4 before:absolute before:inset-y-2 before:left-[11px] before:w-[2px] before:bg-border">
+                                      {order.status_history && order.status_history.map((hist: any, idx: number) => {
+                                        const histConfig = getOrderStatusConfig(hist.status);
+                                        const HistIcon = histConfig.icon;
+                                        return (
+                                          <div key={idx} className="relative flex gap-3 items-start">
+                                            <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 relative z-10 ${histConfig.badgeClass || histConfig.colorClass}`}>
+                                              <HistIcon className="w-3 h-3" />
+                                            </div>
+                                            <div>
+                                              <p className="text-[11px] font-semibold text-foreground">{histConfig.label}</p>
+                                              <p className="text-[9px] text-muted-foreground">{formatTimestamp(hist.timestamp)}</p>
+                                              {hist.notes && <p className="text-[10px] text-muted-foreground mt-0.5">{hist.notes}</p>}
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                      {(!order.status_history || order.status_history.length === 0) && (
+                                        <div className="relative flex gap-3 items-start">
+                                          <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 relative z-10 ${config.badgeClass || config.colorClass}`}>
+                                            <StatusIcon className="w-3 h-3" />
+                                          </div>
+                                          <div>
+                                            <p className="text-[11px] font-semibold text-foreground">{config.label}</p>
+                                            <p className="text-[9px] text-muted-foreground">{formatTimestamp(order.created_at)}</p>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                    {order.delivery_token && (
+                                      <div className="mt-4 p-3 bg-card border border-border rounded-xl">
+                                        <p className="text-[10px] text-muted-foreground">Delivery Token</p>
+                                        <p className="text-xs font-mono font-bold text-accent">{order.delivery_token}</p>
+                                        <p className="text-[9px] text-muted-foreground mt-1">Provide this to your dispatch rider upon delivery.</p>
+                                      </div>
+                                    )}
+                                  </div>
+
                                   <h4 className="text-[11px] font-semibold text-foreground mb-2 flex items-center gap-1">
-                                    <Receipt className="w-3 h-3" /> Payment History
+                                    <Receipt className="w-3 h-3 text-accent" /> Payment History
                                   </h4>
                                   {orderPayments.length > 0 ? (
                                     <div className="space-y-1.5">

@@ -1,6 +1,9 @@
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
-import { categories } from "@/data/products";
+import { categories as staticCategories } from "@/data/products";
+import { db } from "@/integrations/firebase/client";
+import { collection, getDocs, query, where } from "firebase/firestore";
 
 const containerVariants = {
   hidden: {},
@@ -21,8 +24,40 @@ const cardVariants = {
 };
 
 const CategoriesSection = () => {
+  const [categories, setCategories] = useState(staticCategories);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchCategoryCounts = async () => {
+      try {
+        // Fetch all available products to calculate accurate counts locally
+        const q = query(collection(db, "products"), where("available", "==", true));
+        const snapshot = await getDocs(q);
+        
+        const counts: Record<string, number> = {};
+        snapshot.docs.forEach((doc) => {
+          const cat = doc.data().category;
+          if (cat) {
+            counts[cat] = (counts[cat] || 0) + 1;
+          }
+        });
+
+        setCategories(
+          staticCategories.map((cat) => ({
+            ...cat,
+            count: counts[cat.name] || 0,
+          }))
+        );
+      } catch (err: any) {
+        setError(err?.message || "Unknown error occurred");
+        console.warn("Failed to fetch category counts", err);
+      }
+    };
+    fetchCategoryCounts();
+  }, []);
+
   return (
-    <section className="py-20 lg:py-28 bg-secondary/50 overflow-hidden">
+    <section className="py-20 lg:py-28 bg-background overflow-hidden">
       <div className="container mx-auto px-4 lg:px-8">
         <motion.div
           initial={{ opacity: 0, y: 30 }}
