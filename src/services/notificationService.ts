@@ -125,7 +125,7 @@ export const getUnreadCount = async (userId: string): Promise<number> => {
 // ─── Real-time ────────────────────────────────────────────────────────────────
 
 /**
- * Subscribe to all notifications for a user in real-time via Supabase channel.
+ * Subscribe to all notifications for a user in real-time via Firebase Firestore.
  * Returns an unsubscribe function — call it on component unmount.
  */
 export const subscribeToNotifications = (

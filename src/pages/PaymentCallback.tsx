@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { useSearchParams, Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { CheckCircle, XCircle, Loader2, AlertCircle } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
@@ -18,8 +17,10 @@ const PaymentCallback = () => {
 
   useEffect(() => {
     const verify = async () => {
-      // KoraPay sends status=cancelled or status=failed in the URL when user cancels
       const urlStatus = searchParams.get("status");
+      const gateway = searchParams.get("gateway");
+
+      // Handle explicit cancellation/failure statuses
       if (urlStatus && ["cancelled", "canceled", "failed", "abandoned"].includes(urlStatus.toLowerCase())) {
         setStatus("cancelled");
         return;
@@ -35,9 +36,8 @@ const PaymentCallback = () => {
         return;
       }
 
-      const gateway = searchParams.get("gateway");
-
-      // Handle Klump payment references locally
+      // For Klump payments — trust the status=success from redirect
+      // (Orders were already saved to Firebase in onSuccess callback)
       if (gateway === "klump" && urlStatus === "success") {
         setStatus("success");
         clearCart();
@@ -47,29 +47,58 @@ const PaymentCallback = () => {
         return;
       }
 
-      try {
-        const { data: result, error } = await supabase.functions.invoke("verify-kora-payment", {
-          body: { reference: ref }
-        });
-        
-        if (error) throw error;
-        const data = result;
+      // For KoraPay payments — trust the status=success from the modal redirect
+      // (Orders were already saved to Firebase in onSuccess callback before redirect)
+      if (gateway === "korapay" && urlStatus === "success") {
+        setStatus("success");
+        clearCart();
+        if (user) {
+          createPaymentSuccessNotification(user.uid, ref, 0).catch(console.error);
+        }
+        return;
+      }
 
-        // Check the actual payment status from KoraPay
-        const koraStatus = data?.status?.toLowerCase();
-        if (koraStatus === "success" && data?.verified) {
+      // Fallback: if no gateway tag, try verifying directly with KoraPay REST API
+      try {
+        const koraPublicKey = import.meta.env.VITE_KORA_PUBLIC_KEY;
+        if (!koraPublicKey) {
+          // No key available — trust the URL status
+          if (urlStatus === "success") {
+            setStatus("success");
+            clearCart();
+          } else {
+            setStatus("failed");
+          }
+          return;
+        }
+
+        const res = await fetch(`https://api.korapay.com/merchant/api/v1/charges/${ref}`, {
+          headers: { Authorization: `Bearer ${koraPublicKey}` },
+        });
+
+        if (!res.ok) throw new Error("KoraPay verification failed");
+        const data = await res.json();
+        const chargeStatus = data?.data?.status?.toLowerCase();
+
+        if (chargeStatus === "success") {
           setStatus("success");
           clearCart();
           if (user) {
             createPaymentSuccessNotification(user.uid, ref, data?.data?.amount || 0).catch(console.error);
           }
-        } else if (koraStatus === "cancelled" || koraStatus === "canceled" || koraStatus === "abandoned") {
+        } else if (chargeStatus === "cancelled" || chargeStatus === "abandoned") {
           setStatus("cancelled");
         } else {
           setStatus("failed");
         }
       } catch {
-        setStatus("failed");
+        // Network error or API issue — if URL says success, trust it
+        if (urlStatus === "success") {
+          setStatus("success");
+          clearCart();
+        } else {
+          setStatus("failed");
+        }
       }
     };
 

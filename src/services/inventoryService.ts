@@ -57,10 +57,10 @@ export const isProductAvailable = (product: Partial<ProductInventory>): boolean 
   product?.available !== false &&
   product?.inventory_status !== INVENTORY_STATUS.DISCONTINUED;
 
-// ─── Supabase DB Operations ───────────────────────────────────────────────────
+// ─── Firebase DB Operations ───────────────────────────────────────────────────
 
 /**
- * Atomically decrease stock via Supabase RPC.
+ * Atomically decrease stock via Firebase Firestore transaction.
  * Throws if insufficient stock (prevents race conditions).
  */
 export const decreaseInventory = async (
