@@ -509,6 +509,7 @@ const Checkout = () => {
   return (
     <div className="min-h-screen flex flex-col">
       <Navbar />
+      <div id="klump__checkout"></div>
       <div className="flex-1 pt-24 pb-16">
         <div className="container mx-auto px-4 lg:px-8 max-w-6xl">
 
