@@ -31,21 +31,37 @@ interface MethodConfig {
   unavailableReason?: string;
 }
 
-// ─── Helper: load Klump script ───────────────────────────────────────
+let klumpScriptPromise: Promise<void> | null = null;
 function loadKlumpScript(): Promise<void> {
-  return new Promise((resolve, reject) => {
+  if (klumpScriptPromise) return klumpScriptPromise;
+  
+  klumpScriptPromise = new Promise((resolve, reject) => {
     const scriptId = "klump-js-script";
     if (document.getElementById(scriptId)) {
-      setTimeout(resolve, 100);
+      resolve();
       return;
     }
     const script = document.createElement("script");
     script.id = scriptId;
     script.src = "https://js.useklump.com/klump.js";
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error("Failed to load Klump script"));
+    script.onerror = () => {
+      klumpScriptPromise = null;
+      reject(new Error("Failed to load Klump script"));
+    };
     document.body.appendChild(script);
   });
+  
+  return klumpScriptPromise;
+}
+
+// Helper to safely get Klump constructor since it's a global class, not attached to `window`
+function getKlump(): any {
+  try {
+    return (0, eval)("Klump");
+  } catch (e) {
+    return undefined;
+  }
 }
 
 // ─── Helper: load KoraPay script ─────────────────────────────────────
@@ -370,7 +386,7 @@ const Checkout = () => {
     setLoading(true);
     try {
       await loadKlumpScript();
-      const KlumpCtor = (window as any).Klump;
+      const KlumpCtor = getKlump();
       if (!KlumpCtor) throw new Error("Klump payment service unavailable. Check your connection.");
 
       new KlumpCtor({
