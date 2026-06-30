@@ -258,11 +258,11 @@ const Checkout = () => {
             });
 
             toast.success("Order placed successfully!", { id: "checkout" });
-            navigate(`/payment/callback?reference=${response.reference || paymentRef}&status=success`);
+            navigate(`/payment/callback?reference=${response.reference || paymentRef}&status=success&gateway=korapay`);
           } catch (error) {
             console.error("Order creation error:", error);
             toast.error("Payment successful but failed to save order. Support has been notified.", { id: "checkout" });
-            navigate(`/payment/callback?reference=${response.reference || paymentRef}&status=success`);
+            navigate(`/payment/callback?reference=${response.reference || paymentRef}&status=success&gateway=korapay`);
           }
         },
         onClose: function () {
@@ -359,11 +359,11 @@ const Checkout = () => {
             });
 
             toast.success("Deposit paid successfully!", { id: "checkout" });
-            navigate(`/payment/callback?reference=${response.reference || paymentRef}&status=success`);
+            navigate(`/payment/callback?reference=${response.reference || paymentRef}&status=success&gateway=korapay`);
           } catch (error) {
             console.error("Order creation error:", error);
             toast.error("Payment successful but failed to save order. Support has been notified.", { id: "checkout" });
-            navigate(`/payment/callback?reference=${response.reference || paymentRef}&status=success`);
+            navigate(`/payment/callback?reference=${response.reference || paymentRef}&status=success&gateway=korapay`);
           }
         },
         onClose: function () {
@@ -454,12 +454,12 @@ const Checkout = () => {
             });
 
             toast.success("Order placed successfully via Klump!", { id: "checkout" });
-            navigate(`/payment/callback?reference=${klumpRef}&status=success`);
+            navigate(`/payment/callback?reference=${klumpRef}&status=success&gateway=klump`);
           } catch (error) {
             console.error("Order creation error:", error);
             toast.error("Payment successful but failed to save order. Support has been notified.", { id: "checkout" });
             const klumpRef = data?.data?.reference || `klp-${Date.now()}`;
-            navigate(`/payment/callback?reference=${klumpRef}&status=success`);
+            navigate(`/payment/callback?reference=${klumpRef}&status=success&gateway=klump`);
           }
         },
         onError: () => {

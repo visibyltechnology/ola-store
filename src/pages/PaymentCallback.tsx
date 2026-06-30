@@ -35,8 +35,10 @@ const PaymentCallback = () => {
         return;
       }
 
-      // Handle Klump test payment references locally
-      if (ref.startsWith("klp-") && urlStatus === "success") {
+      const gateway = searchParams.get("gateway");
+
+      // Handle Klump payment references locally
+      if (gateway === "klump" && urlStatus === "success") {
         setStatus("success");
         clearCart();
         if (user) {
