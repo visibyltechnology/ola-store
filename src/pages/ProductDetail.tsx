@@ -196,7 +196,7 @@ const ProductDetail = () => {
             <motion.div
               initial={{ opacity: 0, x: -30 }}
               animate={{ opacity: 1, x: 0 }}
-              className="bg-secondary/50 rounded-3xl p-8 lg:p-12 aspect-square flex items-center justify-center"
+              className="relative bg-secondary/50 rounded-3xl p-8 lg:p-12 aspect-square flex items-center justify-center"
             >
               {product.image ? (
                 <img
@@ -248,25 +248,27 @@ const ProductDetail = () => {
               <div className="space-y-4 mb-8">
 
                 {/* Add to Cart — Full Purchase */}
-                <div className="flex gap-3">
-                  <Button
-                    onClick={handleAddToCart}
-                    disabled={!product.inStock}
-                    variant="outline"
-                    className="flex-1 border-accent text-accent hover:bg-accent hover:text-accent-foreground py-6 rounded-xl disabled:opacity-50"
-                  >
-                    <ShoppingCart className="mr-2 w-5 h-5" />
-                    {inCartFull ? "In Cart ✓" : "Add to Cart"}
-                  </Button>
-                  <Button
-                    onClick={handleBuyNow}
-                    disabled={!product.inStock}
-                    className="flex-1 bg-gradient-gold text-accent-foreground font-semibold py-6 rounded-xl hover:opacity-90 shadow-gold disabled:opacity-50 disabled:shadow-none"
-                  >
-                    <Zap className="mr-2 w-5 h-5" />
-                    Buy Now – {formatPrice(product.price)}
-                  </Button>
-                  <p className="text-xs text-muted-foreground mt-2 text-center">
+                <div className="flex flex-col gap-3">
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <Button
+                      onClick={handleAddToCart}
+                      disabled={!product.inStock}
+                      variant="outline"
+                      className="flex-1 border-accent text-accent hover:bg-accent hover:text-accent-foreground py-6 rounded-xl disabled:opacity-50"
+                    >
+                      <ShoppingCart className="mr-2 w-5 h-5" />
+                      {inCartFull ? "In Cart ✓" : "Add to Cart"}
+                    </Button>
+                    <Button
+                      onClick={handleBuyNow}
+                      disabled={!product.inStock}
+                      className="flex-1 bg-gradient-gold text-accent-foreground font-semibold py-6 rounded-xl hover:opacity-90 shadow-gold disabled:opacity-50 disabled:shadow-none whitespace-normal h-auto min-h-[3rem]"
+                    >
+                      <Zap className="mr-2 w-5 h-5 flex-shrink-0" />
+                      <span>Buy Now – {formatPrice(product.price)}</span>
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground text-center px-2">
                     Want it now but pay later? Choose <strong>Klump</strong> at checkout to split this into 4 payments and get your item immediately!
                   </p>
                 </div>
@@ -325,18 +327,18 @@ const ProductDetail = () => {
                     onClick={handleAddInstallmentToCart}
                     disabled={!product.inStock}
                     variant="outline"
-                    className="w-full border-border text-foreground hover:bg-secondary py-4 rounded-xl mb-2 disabled:opacity-50"
+                    className="w-full border-border text-foreground hover:bg-secondary py-4 rounded-xl mb-2 disabled:opacity-50 whitespace-normal h-auto min-h-[3rem]"
                   >
-                    <ShoppingCart className="mr-2 w-4 h-4" />
-                    {inCartInstallment ? "Deposit in Cart ✓" : `Add Deposit to Cart – ${formatPrice(depositAmount)}`}
+                    <ShoppingCart className="mr-2 w-4 h-4 flex-shrink-0" />
+                    <span>{inCartInstallment ? "Deposit in Cart ✓" : `Add Deposit to Cart – ${formatPrice(depositAmount)}`}</span>
                   </Button>
                   <Button
                     onClick={handlePayDepositNow}
                     disabled={!product.inStock}
-                    className="w-full bg-gradient-gold text-accent-foreground font-semibold py-5 rounded-xl hover:opacity-90 shadow-gold disabled:opacity-50 disabled:shadow-none"
+                    className="w-full bg-gradient-gold text-accent-foreground font-semibold py-5 rounded-xl hover:opacity-90 shadow-gold disabled:opacity-50 disabled:shadow-none whitespace-normal h-auto min-h-[3rem]"
                   >
-                    <CreditCard className="mr-2 w-5 h-5" />
-                    Checkout Deposit – {formatPrice(depositAmount)}
+                    <CreditCard className="mr-2 w-5 h-5 flex-shrink-0" />
+                    <span>Checkout Deposit – {formatPrice(depositAmount)}</span>
                   </Button>
                 </div>
               </div>

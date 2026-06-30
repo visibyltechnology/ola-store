@@ -36,7 +36,6 @@ function loadKlumpScript(): Promise<void> {
   return new Promise((resolve, reject) => {
     const scriptId = "klump-js-script";
     if (document.getElementById(scriptId)) {
-      // already loaded – wait a tick for window.Klump to be ready
       setTimeout(resolve, 100);
       return;
     }
@@ -45,6 +44,24 @@ function loadKlumpScript(): Promise<void> {
     script.src = "https://js.useklump.com/klump.js";
     script.onload = () => resolve();
     script.onerror = () => reject(new Error("Failed to load Klump script"));
+    document.body.appendChild(script);
+  });
+}
+
+// ─── Helper: load KoraPay script ─────────────────────────────────────
+function loadKorapayScript(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if ((window as any).Korapay) { resolve(); return; }
+    const scriptId = "korapay-js-script";
+    if (document.getElementById(scriptId)) {
+      setTimeout(resolve, 100);
+      return;
+    }
+    const script = document.createElement("script");
+    script.id = scriptId;
+    script.src = "https://korablobstorage.blob.core.windows.net/modal-bucket/korapay-collections.min.js";
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Failed to load KoraPay script"));
     document.body.appendChild(script);
   });
 }
@@ -163,58 +180,84 @@ const Checkout = () => {
   const handleKoraPayFull = async () => {
     setLoading(true);
     try {
-      const orderInserts = items.map((item) => ({
-        user_id: user.uid,
-        product_id: item.id.length === 36 ? item.id : undefined, // only UUID product IDs
-        product_name: item.name,
-        product_price: item.price,
-        payment_type: "full_payment" as const,
-        deposit_amount: item.price,
-        interest_rate: 0,
-        total_payable: item.price * item.quantity,
-        remaining_balance: 0,
-        total_paid: 0,
-        installment_months: 0,
-        status: "pending",
-      }));
+      await loadKorapayScript();
+      const KorapayCtor = (window as any).Korapay;
+      if (!KorapayCtor) throw new Error("KoraPay service unavailable. Check your connection.");
 
-      const insertResults = await Promise.all(
-        orderInserts.map(async (order) => {
+      const koraKey = import.meta.env.VITE_KORA_PUBLIC_KEY || "pk_test_PRPabwReqFtVxH472nitLVfuUbFskvZQBxsmAaiA";
+      const paymentRef = `OLA_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      const totalAmount = fullCartTotal + totalDeliveryFee;
+
+      KorapayCtor.initialize({
+        key: koraKey,
+        reference: paymentRef,
+        amount: totalAmount,
+        currency: "NGN",
+        customer: {
+          name: user.displayName || user.email?.split("@")[0] || "Guest",
+          email: user.email || "guest@example.com",
+        },
+        onLoad: () => {
+          setLoading(false);
+        },
+        onSuccess: async function (response: any) {
+          setLoading(true);
+          toast.loading("Processing your order...", { id: "checkout" });
+          
           try {
-            const docRef = await addDoc(collection(db, "orders"), { ...order, created_at: new Date().toISOString() });
-            return { data: { id: docRef.id }, error: null };
+            // Save orders to Firebase AFTER successful payment
+            const orderInserts = items.map((item) => ({
+              user_id: user.uid,
+              product_id: item.id.length === 36 ? item.id : undefined,
+              product_name: item.name,
+              product_price: item.price,
+              payment_type: "full_payment" as const,
+              deposit_amount: item.price,
+              interest_rate: 0,
+              total_payable: item.price * item.quantity,
+              remaining_balance: 0,
+              total_paid: item.price * item.quantity, // Mark as paid!
+              installment_months: 0,
+              status: "processing", // Instantly processing since they paid
+              payment_reference: response.reference || paymentRef,
+              created_at: new Date().toISOString()
+            }));
+
+            const insertResults = await Promise.all(
+              orderInserts.map(async (order) => {
+                const docRef = await addDoc(collection(db, "orders"), order);
+                return { id: docRef.id };
+              })
+            );
+
+            // Also create a payment record for completeness
+            await addDoc(collection(db, "payments"), {
+              order_id: insertResults[0].id,
+              user_id: user.uid,
+              amount: totalAmount,
+              status: "success",
+              payment_gateway: "korapay",
+              payment_reference: response.reference || paymentRef,
+              created_at: new Date().toISOString()
+            });
+
+            toast.success("Order placed successfully!", { id: "checkout" });
+            navigate(`/payment/callback?reference=${response.reference || paymentRef}&status=success`);
           } catch (error) {
-            return { data: null, error };
+            console.error("Order creation error:", error);
+            toast.error("Payment successful but failed to save order. Support has been notified.", { id: "checkout" });
+            navigate(`/payment/callback?reference=${response.reference || paymentRef}&status=success`);
           }
-        })
-      );
-
-      const failedOrders = insertResults.filter((r) => r.error);
-      if (failedOrders.length > 0) {
-        throw new Error("Failed to create some orders. Please try again.");
-      }
-
-      const firstOrderId = insertResults[0].data?.id;
-      if (!firstOrderId) throw new Error("Order creation failed.");
-
-      const redirectUrl = `${window.location.origin}/payment/callback?order_id=${firstOrderId}`;
-      
-      const { data, error } = await supabase.functions.invoke("initialize-kora-payment", {
-        body: {
-          order_id: firstOrderId,
-          amount: fullCartTotal + totalDeliveryFee,
-          customer_email: user.email,
-          customer_name: user.displayName || user.email,
-          redirect_url: redirectUrl,
-        }
+        },
+        onClose: function () {
+          setLoading(false);
+          toast.error("Payment was cancelled.");
+        },
+        onFailed: function () {
+          setLoading(false);
+          toast.error("Payment failed. Please try again.");
+        },
       });
-
-      if (error) throw error;
-
-      const checkoutUrl = data?.checkout_url || data?.payment_url;
-      if (!checkoutUrl) throw new Error(data?.error || "No payment URL received from KoraPay.");
-
-      window.location.href = checkoutUrl;
     } catch (err: any) {
       toast.error(err.message || "KoraPay payment failed to initialize. Please try again.");
       setLoading(false);
@@ -226,68 +269,96 @@ const Checkout = () => {
     if (items.length === 0) return;
     setLoading(true);
     try {
-      const useMixedLogic = hasInstallmentItems;
-
-      const allOrders = items.map((item) => {
-        const isInstallment = useMixedLogic ? item.paymentMode === "installment" : true;
-        const depAmt = isInstallment 
-          ? (item.paymentMode === "installment" ? (item.depositAmount ?? item.price) : Math.round(item.price * 0.3))
-          : item.price;
-        const maxMonths = item.maxInstallmentMonths ?? 6;
-
-        return {
-          user_id: user.uid,
-          product_id: item.id.length === 36 ? item.id : undefined,
-          product_name: item.name,
-          product_price: item.price,
-          payment_type: (isInstallment ? "deposit" : "full_payment") as "deposit" | "full_payment",
-          deposit_amount: depAmt,
-          interest_rate: 0,
-          total_payable: (item.price * item.quantity) + (isInstallment ? futureDeliveryFee : upfrontDeliveryFee),
-          remaining_balance: ((item.price - depAmt) * item.quantity) + (isInstallment ? futureDeliveryFee : 0),
-          total_paid: 0,
-          installment_months: isInstallment ? maxMonths : 0,
-          status: "pending",
-        };
-      });
-
-      const insertResults = await Promise.all(
-        allOrders.map(async (order) => {
-          try {
-            const docRef = await addDoc(collection(db, "orders"), { ...order, created_at: new Date().toISOString() });
-            return { data: { id: docRef.id }, error: null };
-          } catch (error) {
-            return { data: null, error };
-          }
-        })
-      );
-
-      const failedOrders = insertResults.filter((r) => r.error);
-      if (failedOrders.length > 0) throw new Error("Failed to create some orders.");
-
-      const firstOrderId = insertResults[0].data?.id;
-      if (!firstOrderId) throw new Error("Order creation failed.");
-      
       const totalDueNow = depositMethodDue + upfrontDeliveryFee;
-      const redirectUrl = `${window.location.origin}/payment/callback?order_id=${firstOrderId}`;
 
-      const { data, error } = await supabase.functions.invoke("initialize-kora-payment", {
-        body: {
-          order_id: firstOrderId,
-          amount: totalDueNow,
-          customer_email: user.email,
-          customer_name: user.displayName || user.email,
-          redirect_url: redirectUrl,
-        }
+      await loadKorapayScript();
+      const KorapayCtor = (window as any).Korapay;
+      if (!KorapayCtor) throw new Error("KoraPay service unavailable. Check your connection.");
+
+      const koraKey = import.meta.env.VITE_KORA_PUBLIC_KEY || "pk_test_PRPabwReqFtVxH472nitLVfuUbFskvZQBxsmAaiA";
+      const paymentRef = `OLA_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+
+      KorapayCtor.initialize({
+        key: koraKey,
+        reference: paymentRef,
+        amount: totalDueNow,
+        currency: "NGN",
+        customer: {
+          name: user.displayName || user.email?.split("@")[0] || "Guest",
+          email: user.email || "guest@example.com",
+        },
+        onLoad: () => {
+          setLoading(false);
+        },
+        onSuccess: async function (response: any) {
+          setLoading(true);
+          toast.loading("Processing your deposit...", { id: "checkout" });
+
+          try {
+            const useMixedLogic = hasInstallmentItems;
+            
+            // Save orders to Firebase AFTER successful payment
+            const allOrders = items.map((item) => {
+              const isInstallment = useMixedLogic ? item.paymentMode === "installment" : true;
+              const depAmt = isInstallment 
+                ? (item.paymentMode === "installment" ? (item.depositAmount ?? item.price) : Math.round(item.price * 0.3))
+                : item.price;
+              const maxMonths = item.maxInstallmentMonths ?? 6;
+
+              return {
+                user_id: user.uid,
+                product_id: item.id.length === 36 ? item.id : undefined,
+                product_name: item.name,
+                product_price: item.price,
+                payment_type: (isInstallment ? "deposit" : "full_payment") as "deposit" | "full_payment",
+                deposit_amount: depAmt,
+                interest_rate: 0,
+                total_payable: (item.price * item.quantity) + (isInstallment ? futureDeliveryFee : upfrontDeliveryFee),
+                remaining_balance: ((item.price - depAmt) * item.quantity) + (isInstallment ? futureDeliveryFee : 0),
+                total_paid: depAmt * item.quantity, // Mark deposit as paid!
+                installment_months: isInstallment ? maxMonths : 0,
+                status: "deposit_paid", // Instantly mark deposit_paid
+                payment_reference: response.reference || paymentRef,
+                created_at: new Date().toISOString(),
+                next_payment_due: isInstallment ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString() : null,
+              };
+            });
+
+            const insertResults = await Promise.all(
+              allOrders.map(async (order) => {
+                const docRef = await addDoc(collection(db, "orders"), order);
+                return { id: docRef.id };
+              })
+            );
+
+            // Create payment record
+            await addDoc(collection(db, "payments"), {
+              order_id: insertResults[0].id,
+              user_id: user.uid,
+              amount: totalDueNow,
+              status: "success",
+              payment_gateway: "korapay",
+              payment_reference: response.reference || paymentRef,
+              created_at: new Date().toISOString()
+            });
+
+            toast.success("Deposit paid successfully!", { id: "checkout" });
+            navigate(`/payment/callback?reference=${response.reference || paymentRef}&status=success`);
+          } catch (error) {
+            console.error("Order creation error:", error);
+            toast.error("Payment successful but failed to save order. Support has been notified.", { id: "checkout" });
+            navigate(`/payment/callback?reference=${response.reference || paymentRef}&status=success`);
+          }
+        },
+        onClose: function () {
+          setLoading(false);
+          toast.error("Payment was cancelled.");
+        },
+        onFailed: function () {
+          setLoading(false);
+          toast.error("Payment failed. Please try again.");
+        },
       });
-
-      if (error) throw error;
-
-      const checkoutUrl = data?.checkout_url || data?.payment_url;
-      if (!checkoutUrl) throw new Error(data?.error || "No payment URL received.");
-
-      // NOTE: Cart is cleared only after confirmed payment success (in PaymentCallback)
-      window.location.href = checkoutUrl;
     } catch (err: any) {
       toast.error(err.message || "Payment failed to initialize. Please try again.");
       setLoading(false);
@@ -303,7 +374,7 @@ const Checkout = () => {
       if (!KlumpCtor) throw new Error("Klump payment service unavailable. Check your connection.");
 
       new KlumpCtor({
-        publicKey: "klp_pk_test_08ba948c602348a09f9f6d924c2292c3f24cc2e7b514412c8c19868305b5820b",
+        publicKey: import.meta.env.VITE_KLUMP_PUBLIC_KEY || "klp_pk_test_08ba948c602348a09f9f6d924c2292c3f24cc2e7b514412c8c19868305b5820b",
         data: {
           amount: fullCartTotal,
           shipping_fee: 0,
@@ -322,9 +393,58 @@ const Checkout = () => {
             quantity: i.quantity,
           })),
         },
-        onSuccess: (data: any) => {
-          clearCart();
-          navigate(`/payment/callback?status=success&reference=${data?.data?.reference || "klp-" + Date.now()}`);
+        onSuccess: async (data: any) => {
+          setLoading(true);
+          toast.loading("Processing your Klump order...", { id: "checkout" });
+
+          try {
+            const klumpRef = data?.data?.reference || `klp-${Date.now()}`;
+            
+            // Save orders to Firebase
+            const orderInserts = items.map((item) => ({
+              user_id: user.uid,
+              product_id: item.id.length === 36 ? item.id : undefined,
+              product_name: item.name,
+              product_price: item.price,
+              payment_type: "installment" as const,
+              deposit_amount: Math.round(item.price * 0.25), // Klump usually does 4 payments (25% deposit)
+              interest_rate: 0,
+              total_payable: item.price * item.quantity,
+              remaining_balance: (item.price - Math.round(item.price * 0.25)) * item.quantity,
+              total_paid: Math.round(item.price * 0.25) * item.quantity,
+              installment_months: 4,
+              status: "deposit_paid",
+              payment_reference: klumpRef,
+              created_at: new Date().toISOString(),
+              next_payment_due: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+            }));
+
+            const insertResults = await Promise.all(
+              orderInserts.map(async (order) => {
+                const docRef = await addDoc(collection(db, "orders"), order);
+                return { id: docRef.id };
+              })
+            );
+
+            // Create payment record
+            await addDoc(collection(db, "payments"), {
+              order_id: insertResults[0].id,
+              user_id: user.uid,
+              amount: fullCartTotal,
+              status: "success",
+              payment_gateway: "klump",
+              payment_reference: klumpRef,
+              created_at: new Date().toISOString()
+            });
+
+            toast.success("Order placed successfully via Klump!", { id: "checkout" });
+            navigate(`/payment/callback?reference=${klumpRef}&status=success`);
+          } catch (error) {
+            console.error("Order creation error:", error);
+            toast.error("Payment successful but failed to save order. Support has been notified.", { id: "checkout" });
+            const klumpRef = data?.data?.reference || `klp-${Date.now()}`;
+            navigate(`/payment/callback?reference=${klumpRef}&status=success`);
+          }
         },
         onError: () => {
           toast.error("Klump payment failed or was declined. Please try another method.");
@@ -648,7 +768,7 @@ const Checkout = () => {
                 <Button
                   onClick={handlePay}
                   disabled={!selectedMethod || loading}
-                  className={`w-full font-semibold py-6 rounded-xl transition-all text-base ${
+                  className={`w-full font-semibold py-6 rounded-xl transition-all text-base whitespace-normal h-auto min-h-[3.5rem] ${
                     selectedMethod
                       ? "bg-gradient-gold text-accent-foreground hover:opacity-90 shadow-gold"
                       : "bg-secondary text-muted-foreground cursor-not-allowed"

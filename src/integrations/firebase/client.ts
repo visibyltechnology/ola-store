@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { getAnalytics } from "firebase/analytics";
 import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { initializeFirestore, getFirestore } from "firebase/firestore";
 import { getFunctions } from "firebase/functions";
 import { getStorage } from "firebase/storage";
 
@@ -18,6 +18,11 @@ const firebaseConfig = {
 export const app = initializeApp(firebaseConfig);
 export const analytics = typeof window !== "undefined" ? getAnalytics(app) : null;
 export const auth = getAuth(app);
-export const db = getFirestore(app);
+
+// Force long-polling to avoid ERR_CONNECTION_CLOSED / QUIC errors on unstable networks
+export const db = initializeFirestore(app, {
+  experimentalForceLongPolling: true,
+});
+
 export const functions = getFunctions(app, "us-central1");
 export const storage = getStorage(app);

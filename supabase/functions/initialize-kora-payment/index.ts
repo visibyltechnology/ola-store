@@ -1,36 +1,23 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { initializeApp, cert, getApps } from "https://esm.sh/firebase-admin@12/app";
+import { getFirestore } from "https://esm.sh/firebase-admin@12/firestore";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+// Initialize Firebase Admin (singleton)
+function getFirebaseAdmin() {
+  if (getApps().length > 0) return getApps()[0];
+  const serviceAccount = JSON.parse(Deno.env.get("FIREBASE_SERVICE_ACCOUNT")!);
+  return initializeApp({ credential: cert(serviceAccount) });
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    // Read KoraPay settings from DB (with env var fallback)
-    const { data: gatewaySettings } = await supabase
-      .from("payment_settings")
-      .select("public_key, secret_key, enabled")
-      .eq("gateway", "korapay")
-      .maybeSingle();
-
-    if (gatewaySettings && !gatewaySettings.enabled) {
-      return new Response(
-        JSON.stringify({ error: "KoraPay payment gateway is currently disabled" }),
-        { status: 503, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const koraSecretKey = (gatewaySettings?.secret_key && gatewaySettings.secret_key.length > 10)
-      ? gatewaySettings.secret_key
-      : Deno.env.get("KORA_SECRET_KEY");
-
+    const koraSecretKey = Deno.env.get("KORA_SECRET_KEY");
     if (!koraSecretKey) {
       return new Response(
         JSON.stringify({ error: "KoraPay secret key not configured" }),
@@ -38,25 +25,19 @@ Deno.serve(async (req) => {
       );
     }
 
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-
-    const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    if (authError || !user) return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-
     const body = await req.json();
-    const { order_id, amount, customer_email, customer_name, redirect_url } = body;
+    const { order_id, amount, customer_email, customer_name, redirect_url, user_id } = body;
 
-    if (!order_id || !amount || !customer_email) {
+    if (!order_id || !amount || !customer_email || !user_id) {
       return new Response(
-        JSON.stringify({ error: "order_id, amount, and customer_email are required" }),
+        JSON.stringify({ error: "order_id, amount, customer_email and user_id are required" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     const reference = `OLA-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 
+    // Call KoraPay API
     const koraRes = await fetch("https://api.korapay.com/merchant/api/v1/charges/initialize", {
       method: "POST",
       headers: {
@@ -69,8 +50,8 @@ Deno.serve(async (req) => {
         currency: "NGN",
         customer: { email: customer_email, name: customer_name || customer_email },
         redirect_url: redirect_url || `${Deno.env.get("SITE_URL") || "https://www.olasandbselectronics.com.ng"}/payment/callback`,
-        notification_url: `${supabaseUrl}/functions/v1/payment-webhook`,
-        metadata: { order_id, user_id: user.id, gateway: "korapay" },
+        notification_url: `${Deno.env.get("SUPABASE_URL")}/functions/v1/payment-webhook`,
+        metadata: { order_id, user_id, gateway: "korapay" },
       }),
     });
 
@@ -84,13 +65,18 @@ Deno.serve(async (req) => {
       );
     }
 
-    await supabase.from("payments").insert({
+    // Save payment record to Firebase
+    const app = getFirebaseAdmin();
+    const firestoreDb = getFirestore(app);
+
+    await firestoreDb.collection("payments").add({
       order_id,
-      user_id: user.id,
+      user_id,
       amount,
       payment_gateway: "korapay",
       payment_reference: reference,
       status: "pending",
+      created_at: new Date().toISOString(),
     });
 
     return new Response(
@@ -99,6 +85,9 @@ Deno.serve(async (req) => {
     );
   } catch (err) {
     console.error("initialize-kora-payment error:", err);
-    return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return new Response(
+      JSON.stringify({ error: String(err) }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   }
 });
