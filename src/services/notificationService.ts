@@ -89,16 +89,21 @@ export const getUserNotifications = async (
   limitNum = 30
 ): Promise<Notification[]> => {
   try {
+    // No orderBy to avoid composite index requirement — sort client-side
     const q = query(
       collection(db, "notifications"),
       where("user_id", "==", userId),
-      where("is_deleted", "==", false),
-      orderBy("created_at", "desc"),
-      firestoreLimit(limitNum)
+      where("is_deleted", "==", false)
     );
     
     const snapshot = await getDocs(q);
-    return snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })) as Notification[];
+    const results = snapshot.docs
+      .map(docSnap => ({ id: docSnap.id, ...docSnap.data() })) as Notification[];
+    
+    // Sort client-side and limit
+    return results
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, limitNum);
   } catch (error) {
     console.error("[notificationService] getUserNotifications error:", error);
     return [];
@@ -132,17 +137,20 @@ export const subscribeToNotifications = (
   userId: string,
   callback: (notifications: Notification[]) => void
 ): (() => void) => {
+  // No orderBy to avoid composite index requirement — sort client-side
   const q = query(
     collection(db, "notifications"),
     where("user_id", "==", userId),
-    where("is_deleted", "==", false),
-    orderBy("created_at", "desc"),
-    firestoreLimit(30)
+    where("is_deleted", "==", false)
   );
 
   return onSnapshot(q, (snapshot) => {
-    const notifications = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() })) as Notification[];
-    callback(notifications);
+    const notifications = snapshot.docs
+      .map(docSnap => ({ id: docSnap.id, ...docSnap.data() })) as Notification[];
+    // Sort client-side
+    callback(notifications.sort((a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    ).slice(0, 30));
   }, (error) => {
     console.error("[notificationService] subscribeToNotifications error:", error);
   });

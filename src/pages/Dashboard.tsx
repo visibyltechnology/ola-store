@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/integrations/firebase/client";
-import { collection, query, where, orderBy, getDocs, doc, getDoc, updateDoc } from "firebase/firestore";
+import { collection, query, where, orderBy, onSnapshot, doc, getDoc, setDoc, updateDoc } from "firebase/firestore";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -88,27 +88,47 @@ const Dashboard = () => {
   }, [user, authLoading]);
 
   const fetchData = async () => {
+    if (!user) return;
     try {
+      // Fetch orders — no orderBy to avoid composite index requirement, sort client-side
       const ordersRef = collection(db, "orders");
-      const ordersQ = query(ordersRef, where("user_id", "==", user!.uid), orderBy("created_at", "desc"));
+      const ordersQ = query(ordersRef, where("user_id", "==", user.uid));
+
+      // Fetch payments — no orderBy to avoid composite index requirement
       const paymentsRef = collection(db, "payments");
-      const paymentsQ = query(paymentsRef, where("user_id", "==", user!.uid), orderBy("created_at", "desc"));
-      const profileRef = doc(db, "profiles", user!.uid);
+      const paymentsQ = query(paymentsRef, where("user_id", "==", user.uid));
+
+      const profileRef = doc(db, "profiles", user.uid);
 
       const [ordersSnap, paymentsSnap, profileSnap] = await Promise.all([
-        getDocs(ordersQ),
-        getDocs(paymentsQ),
+        new Promise<any[]>((resolve, reject) => {
+          const unsub = onSnapshot(ordersQ, (snap) => {
+            unsub();
+            resolve(snap.docs.map(d => ({ id: d.id, ...d.data() } as Order)));
+          }, reject);
+        }),
+        new Promise<any[]>((resolve, reject) => {
+          const unsub = onSnapshot(paymentsQ, (snap) => {
+            unsub();
+            resolve(snap.docs.map(d => ({ id: d.id, ...d.data() } as Payment)));
+          }, reject);
+        }),
         getDoc(profileRef)
       ]);
 
-      const fetchedOrders = ordersSnap.docs.map(d => ({ id: d.id, ...d.data() } as Order));
-      const fetchedPayments = paymentsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Payment));
+      // Sort client-side by created_at descending
+      const sortedOrders = (ordersSnap as Order[]).sort((a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+      const sortedPayments = (paymentsSnap as Payment[]).sort((a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
 
-      setOrders(fetchedOrders);
-      setPayments(fetchedPayments);
+      setOrders(sortedOrders);
+      setPayments(sortedPayments);
 
-      if (profileSnap.exists()) {
-        const profileData = profileSnap.data() as Profile;
+      if ((profileSnap as any).exists()) {
+        const profileData = (profileSnap as any).data() as Profile;
         setProfile(profileData);
         setProfileForm({
           full_name: profileData.full_name || "",
@@ -116,8 +136,8 @@ const Dashboard = () => {
           address: profileData.address || "",
         });
       }
-    } catch {
-      // silently handle errors, still stop the spinner
+    } catch (err) {
+      console.error("[Dashboard] fetchData error:", err);
     } finally {
       setLoading(false);
     }
@@ -125,11 +145,12 @@ const Dashboard = () => {
 
   const handleUpdateProfile = async () => {
     try {
-      await updateDoc(doc(db, "profiles", user!.uid), {
+      await setDoc(doc(db, "profiles", user!.uid), {
         full_name: profileForm.full_name,
         phone: profileForm.phone,
-        address: profileForm.address
-      });
+        address: profileForm.address,
+        user_id: user!.uid,
+      }, { merge: true });
       toast.success("Profile updated!");
       setProfile(profileForm);
       setEditingProfile(false);

@@ -29,10 +29,11 @@ const Navbar = () => {
 
   useEffect(() => {
     if (!user) return;
+    let unsubscribe: (() => void) | undefined;
     import("@/services/notificationService").then(({ subscribeToUnreadCount }) => {
-      const unsubscribe = subscribeToUnreadCount(user.uid, setUnreadCount);
-      return () => unsubscribe();
+      unsubscribe = subscribeToUnreadCount(user.uid, setUnreadCount);
     });
+    return () => { if (unsubscribe) unsubscribe(); };
   }, [user]);
 
   const handleSearch = (e: React.FormEvent) => {
