@@ -224,7 +224,7 @@ const Checkout = () => {
             // Save orders to Firebase AFTER successful payment
             const orderInserts = items.map((item) => ({
               user_id: user.uid,
-              product_id: item.id.length === 36 ? item.id : undefined,
+              product_id: item.id.length === 36 ? item.id : null,
               product_name: item.name,
               product_price: item.price,
               payment_type: "full_payment" as const,
@@ -323,7 +323,7 @@ const Checkout = () => {
 
               return {
                 user_id: user.uid,
-                product_id: item.id.length === 36 ? item.id : undefined,
+                product_id: item.id.length === 36 ? item.id : null,
                 product_name: item.name,
                 product_price: item.price,
                 payment_type: (isInstallment ? "deposit" : "full_payment") as "deposit" | "full_payment",
@@ -419,7 +419,7 @@ const Checkout = () => {
             // Save orders to Firebase
             const orderInserts = items.map((item) => ({
               user_id: user.uid,
-              product_id: item.id.length === 36 ? item.id : undefined,
+              product_id: item.id.length === 36 ? item.id : null,
               product_name: item.name,
               product_price: item.price,
               payment_type: "installment" as const,
@@ -468,6 +468,7 @@ const Checkout = () => {
         },
         onLoad: () => setLoading(false),
         onClose: () => setLoading(false),
+        onOpen: () => console.log("Klump modal opened"),
       });
     } catch (err: any) {
       toast.error(err.message || "Failed to load Klump. Please check your internet connection.");
