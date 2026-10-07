@@ -1,7 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "rewrites": [
-    { "source": "/:path*", "destination": "https://sapphire-brook-lab.vercel.app/:path*" }
+  "routes": [
+    { "src": "/(.*)", "dest": "https://sapphire-brook-lab.vercel.app/$1" }
   ]
 }
-
