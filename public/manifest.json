@@ -1,0 +1,24 @@
+{
+  "name": "Olas & Bs NIG Ltd",
+  "short_name": "Olas & Bs",
+  "description": "Premium household electronics in Nigeria with flexible payment options.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0a4d8c",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icon-192.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any"
+    }
+  ]
+}
