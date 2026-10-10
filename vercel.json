@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "https://sapphire-brook-lab.vercel.app/$1"
+    }
+  ]
+}
